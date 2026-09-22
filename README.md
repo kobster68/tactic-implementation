@@ -71,8 +71,9 @@ java -jar critical-service/target/critical-service.jar
 java -jar receiver/target/receiver.jar
 java -jar monitor/target/monitor.jar
 
-# override any config value at launch
-java -jar monitor/target/monitor.jar -Dmonitor.listen.port=6003
+# override any config value at launch: -D flags are JVM options and must come BEFORE
+# -jar; --config names an override file and is a program argument, so it comes AFTER the jar
+java -Dmonitor.listen.port=6003 -jar monitor/target/monitor.jar
 java -jar sensor-sim/target/sensor-sim.jar --config ./my-hosts.properties
 ```
 
@@ -121,8 +122,9 @@ file) is shared -- **changes to `protocol` go through a PR**, never a direct edi
 
 - [x] **Code** -- the four processes and the shared `protocol` module (this repo).
 - [x] **ReadMe** -- this file.
-- [ ] **UML class diagram + sequence diagrams, with narrative** -- to be added under
-  [`uml/`](uml/) (placeholder directory in place).
+- [ ] **UML class diagram + sequence diagrams, with narrative** -- the receiver's are in
+  [`uml/receiver/`](uml/receiver/) (class + sequence diagrams, rendered PNGs, and a narrative);
+  the other slices' diagrams are still to come.
 
 ## Module layout
 
