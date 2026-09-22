@@ -16,6 +16,7 @@ import java.util.Arrays;
 /**
  * Critical-service process: assesses sensor readings and sends periodic heartbeats.
  * Malformed input propagates out of the single service thread, stopping the process and its beats.
+ * Optional {@code --run-for-ms <positive milliseconds>} bounds demo/test runs; it is not fault injection.
  */
 public final class Main {
 
@@ -31,6 +32,7 @@ public final class Main {
 
     public static void main(String[] args) throws Exception {
         NetConfig cfg = NetConfig.load(args);
+        long runForNanos = parseRunForNanos(args);
         LOG.log(Level.INFO, "startup {0}", cfg.describe("critical-service"));
 
         long heartbeatPeriodMs = cfg.heartbeatPeriodMs();
@@ -46,9 +48,14 @@ public final class Main {
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
             long heartbeatSeq = 0;
             long nextHeartbeatNanos = System.nanoTime();
+            long stopAtNanos = nextHeartbeatNanos + runForNanos;
 
             while (true) {
                 long now = System.nanoTime();
+                if (runForNanos > 0 && now - stopAtNanos >= 0) {
+                    LOG.log(Level.INFO, "demo runtime elapsed; stopping normally");
+                    break;
+                }
                 if (now - nextHeartbeatNanos >= 0) {
                     Heartbeat beat = new Heartbeat("critical-service", heartbeatSeq++,
                             System.currentTimeMillis());
@@ -59,7 +66,11 @@ public final class Main {
                     nextHeartbeatNanos = now + heartbeatPeriodNanos;
                 }
 
-                long remainingNanos = nextHeartbeatNanos - System.nanoTime();
+                now = System.nanoTime();
+                long remainingNanos = nextHeartbeatNanos - now;
+                if (runForNanos > 0) {
+                    remainingNanos = Math.min(remainingNanos, stopAtNanos - now);
+                }
                 if (remainingNanos <= 0) {
                     continue;
                 }
@@ -84,5 +95,25 @@ public final class Main {
                         sensorReading.laneOffsetMeters(), assessment);
             }
         }
+    }
+
+    /** Returns zero for continuous operation, otherwise a validated demo runtime in nanoseconds. */
+    private static long parseRunForNanos(String[] args) {
+        long runForNanos = 0;
+        for (int i = 0; i < args.length; i++) {
+            if ("--config".equals(args[i])) {
+                i++; // NetConfig owns this option and its path argument.
+            } else if ("--run-for-ms".equals(args[i])) {
+                if (runForNanos != 0 || i + 1 >= args.length) {
+                    throw new IllegalArgumentException("Use --run-for-ms once with a positive millisecond value");
+                }
+                long runForMs = Long.parseLong(args[++i]);
+                if (runForMs <= 0 || runForMs > Long.MAX_VALUE / 1_000_000L) {
+                    throw new IllegalArgumentException("--run-for-ms must be positive and fit in nanoseconds");
+                }
+                runForNanos = runForMs * 1_000_000L;
+            }
+        }
+        return runForNanos;
     }
 }
