@@ -158,7 +158,12 @@ public final class ReceiverNode implements AutoCloseable {
             byte[] bytes = Codec.encode(report);
             socket.send(new DatagramPacket(bytes, bytes.length, reportTarget));
         } catch (IOException e) {
-            LOG.log(Level.WARNING, "failed to send status report", e);
+            if (running) {
+                LOG.log(Level.WARNING, "failed to send status report", e);
+            } else {
+                // A send interrupted by close() is an expected part of shutdown, not an error.
+                LOG.log(Level.DEBUG, "status report send interrupted by shutdown", e);
+            }
         }
     }
 

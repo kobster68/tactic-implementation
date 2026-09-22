@@ -6,6 +6,7 @@ import edu.rit.swen755.heartbeat.protocol.ServiceStatus;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -28,7 +29,7 @@ public final class HeartbeatReceiver {
         }
         this.periodMs = periodMs;
         this.missedCount = missedCount;
-        this.clock = clock;
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /** Beat handler: records that {@code beat}'s service was observed alive just now. */
@@ -44,6 +45,9 @@ public final class HeartbeatReceiver {
     /**
      * Consecutive beats missed by a known service: {@code floor((now - lastSeen) / period)}. Zero
      * at the instant of a beat, one after a full period of silence, and so on.
+     *
+     * @throws IllegalArgumentException if {@code serviceId} has never sent a beat; use {@link
+     *     #check()} for a snapshot over all tracked services
      */
     public int missed(String serviceId) {
         return missedSince(clock.millis(), seenAt(serviceId));
@@ -52,12 +56,20 @@ public final class HeartbeatReceiver {
     /**
      * Current judged state of a known service: HEALTHY with no misses, SUSPECT while misses are
      * below the configured threshold, FAILED once they reach it.
+     *
+     * @throws IllegalArgumentException if {@code serviceId} has never sent a beat (see {@link
+     *     #missed(String)})
      */
     public ServiceState state(String serviceId) {
         return stateFor(missed(serviceId));
     }
 
-    /** True unless the service is {@link ServiceState#FAILED}, mirroring course slide 8. */
+    /**
+     * True unless the service is {@link ServiceState#FAILED}, mirroring course slide 8.
+     *
+     * @throws IllegalArgumentException if {@code serviceId} has never sent a beat (see {@link
+     *     #missed(String)})
+     */
     public boolean checkAlive(String serviceId) {
         return state(serviceId) != ServiceState.FAILED;
     }

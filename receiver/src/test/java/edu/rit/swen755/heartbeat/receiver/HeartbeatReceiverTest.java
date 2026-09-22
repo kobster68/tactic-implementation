@@ -146,4 +146,20 @@ class HeartbeatReceiverTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new HeartbeatReceiver(PERIOD_MS, 0, clock));
     }
+
+    @Test
+    void rejectsNullClock() {
+        // A null clock would fail later at the first clock.millis(), far from here; fail fast.
+        assertThrows(NullPointerException.class,
+                () -> new HeartbeatReceiver(PERIOD_MS, MISSED_COUNT, null));
+    }
+
+    @Test
+    void queryingAServiceThatNeverBeatThrows() {
+        HeartbeatReceiver receiver = newReceiver(new FakeClock(1_000));
+        // The single-service queries require a known service; check() is the snapshot of all.
+        assertThrows(IllegalArgumentException.class, () -> receiver.state("never-seen"));
+        assertThrows(IllegalArgumentException.class, () -> receiver.checkAlive("never-seen"));
+        assertThrows(IllegalArgumentException.class, () -> receiver.missed("never-seen"));
+    }
 }
