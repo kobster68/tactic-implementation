@@ -1,23 +1,18 @@
 package edu.rit.swen755.heartbeat.receiver;
 
-import edu.rit.swen755.heartbeat.protocol.Codec;
-import edu.rit.swen755.heartbeat.protocol.Message;
 import edu.rit.swen755.heartbeat.protocol.NetConfig;
-import edu.rit.swen755.heartbeat.protocol.ServiceState;
-import edu.rit.swen755.heartbeat.protocol.ServiceStatus;
-import edu.rit.swen755.heartbeat.protocol.StatusReport;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetSocketAddress;
-import java.util.Arrays;
-import java.util.List;
+import java.util.concurrent.CountDownLatch;
 
 /**
- * Receiver process (Step 0 tracer). It receives one heartbeat, then sends one
- * {@link StatusReport} carrying a single HEALTHY {@link ServiceStatus} to the monitor and stops.
- * No last-seen table, no watchdog timer, no state machine yet.
+ * Receiver process: the watchdog over service heartbeats. It binds the listen port, updates a
+ * per-service last-seen table as beats arrive, and every {@code receiver.checkIntervalMs} judges
+ * each service HEALTHY / SUSPECT / FAILED and sends the monitor a {@code StatusReport} that doubles
+ * as the receiver's own heartbeat. It runs until the process is stopped.
+ *
+ * <p>The watchdog logic lives in {@link HeartbeatReceiver} (pure, clock-injected) and the sockets
+ * and threads in {@link ReceiverNode}; this class only wires configuration to them.
  */
 public final class Main {
 
@@ -27,7 +22,9 @@ public final class Main {
     }
 
     private static final Logger LOG = System.getLogger("receiver");
-    private static final int RECEIVE_TIMEOUT_MS = 30_000;
+
+    /** Identifier this receiver reports under; override with {@code -Dreceiver.id=<name>}. */
+    private static final String DEFAULT_RECEIVER_ID = "receiver-1";
 
     private Main() {
     }
@@ -36,27 +33,23 @@ public final class Main {
         NetConfig cfg = NetConfig.load(args);
         LOG.log(Level.INFO, "startup {0}", cfg.describe("receiver"));
 
-        try (DatagramSocket socket = new DatagramSocket(cfg.receiverListenPort())) {
-            socket.setSoTimeout(RECEIVE_TIMEOUT_MS);
-            byte[] buffer = new byte[2048];
-            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-            socket.receive(packet);
-            Message heartbeat = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
-            LOG.log(Level.INFO, "tracer received {0} from {1}", heartbeat, packet.getSocketAddress());
+        String receiverId = System.getProperty("receiver.id", DEFAULT_RECEIVER_ID);
+        HeartbeatReceiver receiver = new HeartbeatReceiver(
+                cfg.heartbeatPeriodMs(), cfg.receiverMissedCount(), Clock.SYSTEM);
+        ReceiverNode node = new ReceiverNode(receiver, cfg.receiverListenPort(),
+                cfg.receiverReportTarget(), cfg.receiverCheckIntervalMs(), receiverId);
 
-            long now = System.currentTimeMillis();
-            StatusReport report = new StatusReport("receiver-0", 0, now,
-                    List.of(new ServiceStatus("critical-service", ServiceState.HEALTHY, now, 0)));
-            byte[] reportBytes = Codec.encode(report);
-            InetSocketAddress reportTarget = cfg.receiverReportTarget();
-            socket.send(new DatagramPacket(reportBytes, reportBytes.length, reportTarget));
-            LOG.log(Level.INFO, "tracer sent {0} -> {1}", report, reportTarget);
-        }
+        CountDownLatch stopped = new CountDownLatch(1);
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            node.close();
+            stopped.countDown();
+        }, "receiver-shutdown"));
 
-        // TODO(receiver owner): a per-service last-seen table, checkAlive() every
-        //   receiver.checkIntervalMs, a periodic StatusReport every check interval, and the
-        //   HEALTHY/SUSPECT/FAILED transitions using missed = floor((now - lastSeen) /
-        //   heartbeat.periodMs) against receiver.missedCount. Everything after this line is your slice.
-        System.exit(0);
+        node.start();
+        // Startup line above (cfg.describe) already logs the timings; this only adds the id and the
+        // actually-bound port. The port is passed as a String so MessageFormat does not group it.
+        LOG.log(Level.INFO, "{0} watching udp/{1}", receiverId, Integer.toString(node.listenPort()));
+
+        stopped.await(); // run until Ctrl-C / SIGTERM triggers the shutdown hook
     }
 }

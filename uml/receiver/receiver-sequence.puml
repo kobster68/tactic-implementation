@@ -1,0 +1,56 @@
+@startuml receiver-sequence
+title Receiver slice — sequence: beats, then a crash detected
+
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+
+participant "critical-service\n(teammate slice)" as CS
+box "receiver process (this slice)" #F5F5F5
+  participant "ReceiverNode\nreceive thread" as RX
+  participant "HeartbeatReceiver\n(watchdog)" as HR
+  participant "ReceiverNode\nchecker thread" as CK
+end box
+participant "monitor\n(teammate slice)" as MON
+
+== normal operation ==
+loop every heartbeat.periodMs
+  CS -> RX : Heartbeat  (UDP :5002)
+  RX -> HR : pitAPat(beat)
+  HR -> HR : updateTime(): lastSeen = now
+end
+
+note over RX
+  A malformed or out-of-range datagram is
+  logged and skipped here — the watchdog
+  never crashes with the service it watches.
+end note
+
+loop every receiver.checkIntervalMs
+  CK -> HR : check()
+  HR --> CK : List<ServiceStatus>  (all HEALTHY)
+  CK -> MON : StatusReport  (UDP :5003)
+end
+
+== the critical service crashes and stops beating ==
+note over CS : unhandled parse/validate\nexception → process dies
+
+loop every receiver.checkIntervalMs
+  CK -> HR : check()
+  HR --> CK : missed = floor((now - lastSeen) / periodMs)
+  alt missed == 0
+    note over CK : HEALTHY
+  else 1 <= missed < missedCount
+    note over CK : SUSPECT — log at INFO
+  else missed >= missedCount
+    note over CK : FAILED — log at WARNING
+  end
+  CK -> MON : StatusReport  (state per known service)
+end
+
+note over MON
+  Observes HEALTHY -> SUSPECT -> FAILED within
+  missedCount x heartbeat.periodMs (+ one check interval).
+  Silence on this report stream is how the monitor,
+  in turn, detects a dead receiver.
+end note
+@enduml
