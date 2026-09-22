@@ -39,24 +39,30 @@ public final class Main {
         if (heartbeatPeriodMs <= 0) {
             throw new IllegalArgumentException("heartbeat.periodMs must be positive");
         }
+        // Monotonic deadlines avoid changes to the system clock affecting heartbeat scheduling.
         long heartbeatPeriodNanos = Math.multiplyExact(heartbeatPeriodMs, 1_000_000L);
         InetSocketAddress heartbeatTarget = cfg.serviceHeartbeatTarget();
         LaneDetector laneDetector = new LaneDetector();
 
+        // This socket closes on both normal completion and an uncaught input failure.
         try (DatagramSocket socket = new DatagramSocket(cfg.serviceListenPort())) {
             byte[] buffer = new byte[2048];
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
             long heartbeatSeq = 0;
+            // Send the first heartbeat immediately, without waiting for a sensor reading.
             long nextHeartbeatNanos = System.nanoTime();
             long stopAtNanos = nextHeartbeatNanos + runForNanos;
 
+            // One thread owns processing and heartbeats: no heartbeat worker can outlive a crash.
             while (true) {
                 long now = System.nanoTime();
+                // A supplied runtime is a normal demo shutdown, not the simulated random fault.
                 if (runForNanos > 0 && now - stopAtNanos >= 0) {
                     LOG.log(Level.INFO, "demo runtime elapsed; stopping normally");
                     break;
                 }
                 if (now - nextHeartbeatNanos >= 0) {
+                    // Sequence numbers restart with the process; sentAt is a wall-clock log timestamp.
                     Heartbeat beat = new Heartbeat("critical-service", heartbeatSeq++,
                             System.currentTimeMillis());
                     byte[] beatBytes = Codec.encode(beat);
@@ -67,6 +73,7 @@ public final class Main {
                 }
 
                 now = System.nanoTime();
+                // Wait only until the next heartbeat or, when enabled, the demo deadline.
                 long remainingNanos = nextHeartbeatNanos - now;
                 if (runForNanos > 0) {
                     remainingNanos = Math.min(remainingNanos, stopAtNanos - now);
@@ -78,6 +85,7 @@ public final class Main {
                 long timeoutMs = remainingNanos / 1_000_000L
                         + (remainingNanos % 1_000_000L == 0 ? 0 : 1);
                 socket.setSoTimeout((int) Math.min(timeoutMs, Integer.MAX_VALUE));
+                // receive() changes the packet length; restore capacity for the next datagram.
                 packet.setLength(buffer.length);
                 try {
                     socket.receive(packet);
@@ -90,6 +98,7 @@ public final class Main {
                 if (!(reading instanceof SensorReading sensorReading)) {
                     throw new IllegalArgumentException("Expected a SensorReading message");
                 }
+                // Perform the vehicle-function stub; health monitoring belongs to the receiver.
                 LaneAssessment assessment = laneDetector.assess(sensorReading);
                 LOG.log(Level.INFO, "lane offset={0} m, assessment={1}",
                         sensorReading.laneOffsetMeters(), assessment);

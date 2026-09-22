@@ -5,6 +5,7 @@ import edu.rit.swen755.heartbeat.protocol.SensorReading;
 /** Minimal lane-position assessment using a prototype drift threshold. */
 public final class LaneDetector {
 
+    // Prototype warning threshold, separate from the protocol's valid sensor-value range.
     private static final double DRIFT_THRESHOLD_METERS = 0.5;
 
     /**
