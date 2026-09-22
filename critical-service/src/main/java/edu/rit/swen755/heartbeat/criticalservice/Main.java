@@ -10,11 +10,12 @@ import java.lang.System.Logger.Level;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.net.SocketTimeoutException;
 import java.util.Arrays;
 
 /**
- * Critical-service process (Step 0 tracer). It receives one reading, decodes it in a
- * single uncaught call, then sends one {@link Heartbeat} to the receiver and stops.
+ * Critical-service process: assesses sensor readings and sends periodic heartbeats.
+ * Malformed input propagates out of the single service thread, stopping the process and its beats.
  */
 public final class Main {
 
@@ -24,7 +25,6 @@ public final class Main {
     }
 
     private static final Logger LOG = System.getLogger("critical-service");
-    private static final int RECEIVE_TIMEOUT_MS = 30_000;
 
     private Main() {
     }
@@ -33,36 +33,56 @@ public final class Main {
         NetConfig cfg = NetConfig.load(args);
         LOG.log(Level.INFO, "startup {0}", cfg.describe("critical-service"));
 
-        Message reading;
+        long heartbeatPeriodMs = cfg.heartbeatPeriodMs();
+        if (heartbeatPeriodMs <= 0) {
+            throw new IllegalArgumentException("heartbeat.periodMs must be positive");
+        }
+        long heartbeatPeriodNanos = Math.multiplyExact(heartbeatPeriodMs, 1_000_000L);
+        InetSocketAddress heartbeatTarget = cfg.serviceHeartbeatTarget();
+        LaneDetector laneDetector = new LaneDetector();
+
         try (DatagramSocket socket = new DatagramSocket(cfg.serviceListenPort())) {
-            socket.setSoTimeout(RECEIVE_TIMEOUT_MS); // a tracer run must not hang forever
             byte[] buffer = new byte[2048];
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-            socket.receive(packet);
+            long heartbeatSeq = 0;
+            long nextHeartbeatNanos = System.nanoTime();
 
-            // decode parses AND validates in one call; it is left uncaught, so a
-            // malformed reading throws here and crashes the process (the fault the tactic detects).
-            reading = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
-            LOG.log(Level.INFO, "tracer received {0} from {1}", reading, packet.getSocketAddress());
+            while (true) {
+                long now = System.nanoTime();
+                if (now - nextHeartbeatNanos >= 0) {
+                    Heartbeat beat = new Heartbeat("critical-service", heartbeatSeq++,
+                            System.currentTimeMillis());
+                    byte[] beatBytes = Codec.encode(beat);
+                    socket.send(new DatagramPacket(beatBytes, beatBytes.length, heartbeatTarget));
+                    LOG.log(Level.INFO, "sent {0} -> {1}", beat, heartbeatTarget);
+                    // Skip overdue beats rather than sending a burst after a delay.
+                    nextHeartbeatNanos = now + heartbeatPeriodNanos;
+                }
 
-            Heartbeat beat = new Heartbeat("critical-service", 0, System.currentTimeMillis());
-            byte[] beatBytes = Codec.encode(beat);
-            InetSocketAddress heartbeatTarget = cfg.serviceHeartbeatTarget();
-            socket.send(new DatagramPacket(beatBytes, beatBytes.length, heartbeatTarget));
-            LOG.log(Level.INFO, "tracer sent {0} -> {1}", beat, heartbeatTarget);
+                long remainingNanos = nextHeartbeatNanos - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    continue;
+                }
+                // Round up: a zero socket timeout would block indefinitely.
+                long timeoutMs = remainingNanos / 1_000_000L
+                        + (remainingNanos % 1_000_000L == 0 ? 0 : 1);
+                socket.setSoTimeout((int) Math.min(timeoutMs, Integer.MAX_VALUE));
+                packet.setLength(buffer.length);
+                try {
+                    socket.receive(packet);
+                } catch (SocketTimeoutException e) {
+                    continue; // Recheck the heartbeat deadline.
+                }
+
+                // Parse and validation failures remain uncaught and stop the service and its beats.
+                Message reading = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+                if (!(reading instanceof SensorReading sensorReading)) {
+                    throw new IllegalArgumentException("Expected a SensorReading message");
+                }
+                LaneAssessment assessment = laneDetector.assess(sensorReading);
+                LOG.log(Level.INFO, "lane offset={0} m, assessment={1}",
+                        sensorReading.laneOffsetMeters(), assessment);
+            }
         }
-
-        // TODO(critical-service owner): a receive loop over readings and a heartbeat timer at
-        //   heartbeat.periodMs. Keep Codec.decode uncaught so a malformed reading crashes the JVM
-        //   and stops the beats. Everything after this line is your slice.
-        if (!(reading instanceof SensorReading sensorReading)) {
-            throw new IllegalArgumentException("Expected a SensorReading message");
-        }
-        LaneDetector laneDetector = new LaneDetector();
-        LaneAssessment assessment = laneDetector.assess(sensorReading);
-        LOG.log(Level.INFO, "lane offset={0} m, assessment={1}",
-                sensorReading.laneOffsetMeters(), assessment);
-
-        System.exit(0);
     }
 }
