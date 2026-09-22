@@ -4,6 +4,7 @@ import edu.rit.swen755.heartbeat.protocol.Codec;
 import edu.rit.swen755.heartbeat.protocol.Heartbeat;
 import edu.rit.swen755.heartbeat.protocol.Message;
 import edu.rit.swen755.heartbeat.protocol.NetConfig;
+import edu.rit.swen755.heartbeat.protocol.SensorReading;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.net.DatagramPacket;
@@ -32,6 +33,7 @@ public final class Main {
         NetConfig cfg = NetConfig.load(args);
         LOG.log(Level.INFO, "startup {0}", cfg.describe("critical-service"));
 
+        Message reading;
         try (DatagramSocket socket = new DatagramSocket(cfg.serviceListenPort())) {
             socket.setSoTimeout(RECEIVE_TIMEOUT_MS); // a tracer run must not hang forever
             byte[] buffer = new byte[2048];
@@ -40,7 +42,7 @@ public final class Main {
 
             // decode parses AND validates in one call; it is left uncaught, so a
             // malformed reading throws here and crashes the process (the fault the tactic detects).
-            Message reading = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+            reading = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
             LOG.log(Level.INFO, "tracer received {0} from {1}", reading, packet.getSocketAddress());
 
             Heartbeat beat = new Heartbeat("critical-service", 0, System.currentTimeMillis());
@@ -53,6 +55,14 @@ public final class Main {
         // TODO(critical-service owner): a receive loop over readings and a heartbeat timer at
         //   heartbeat.periodMs. Keep Codec.decode uncaught so a malformed reading crashes the JVM
         //   and stops the beats. Everything after this line is your slice.
+        if (!(reading instanceof SensorReading sensorReading)) {
+            throw new IllegalArgumentException("Expected a SensorReading message");
+        }
+        LaneDetector laneDetector = new LaneDetector();
+        LaneAssessment assessment = laneDetector.assess(sensorReading);
+        LOG.log(Level.INFO, "lane offset={0} m, assessment={1}",
+                sensorReading.laneOffsetMeters(), assessment);
+
         System.exit(0);
     }
 }
