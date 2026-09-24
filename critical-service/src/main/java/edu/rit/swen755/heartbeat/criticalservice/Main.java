@@ -114,7 +114,7 @@ public final class Main {
     }
 
     /** Returns zero for continuous operation, otherwise a validated demo runtime in nanoseconds. */
-    private static long parseRunForNanos(String[] args) {
+    static long parseRunForNanos(String[] args) {
         long runForNanos = 0;
         for (int i = 0; i < args.length; i++) {
             if ("--config".equals(args[i])) {
