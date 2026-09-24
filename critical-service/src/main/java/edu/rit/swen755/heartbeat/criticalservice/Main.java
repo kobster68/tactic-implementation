@@ -5,6 +5,7 @@ import edu.rit.swen755.heartbeat.protocol.Heartbeat;
 import edu.rit.swen755.heartbeat.protocol.Message;
 import edu.rit.swen755.heartbeat.protocol.NetConfig;
 import edu.rit.swen755.heartbeat.protocol.SensorReading;
+import java.io.IOException;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.net.DatagramPacket;
@@ -66,8 +67,14 @@ public final class Main {
                     Heartbeat beat = new Heartbeat("critical-service", heartbeatSeq++,
                             System.currentTimeMillis());
                     byte[] beatBytes = Codec.encode(beat);
-                    socket.send(new DatagramPacket(beatBytes, beatBytes.length, heartbeatTarget));
-                    LOG.log(Level.INFO, "sent {0} -> {1}", beat, heartbeatTarget);
+                    try {
+                        socket.send(new DatagramPacket(beatBytes, beatBytes.length, heartbeatTarget));
+                        LOG.log(Level.INFO, "sent {0} -> {1}", beat, heartbeatTarget);
+                    } catch (IOException e) {
+                        // Drop this beat and try the next scheduled one; sensor decoding stays uncaught.
+                        LOG.log(Level.WARNING, "heartbeat send failed for seq=" + beat.seq()
+                                + " -> " + heartbeatTarget, e);
+                    }
                     // Skip overdue beats rather than sending a burst after a delay.
                     nextHeartbeatNanos = now + heartbeatPeriodNanos;
                 }
