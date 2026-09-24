@@ -3,15 +3,23 @@ package edu.rit.swen755.heartbeat.sensorsim;
 import edu.rit.swen755.heartbeat.protocol.Codec;
 import edu.rit.swen755.heartbeat.protocol.NetConfig;
 import edu.rit.swen755.heartbeat.protocol.SensorReading;
+import java.io.IOException;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Random;
 
 /**
- * Sensor-simulator process (Step 0 tracer). It sends exactly one valid
- * {@link SensorReading} to the critical service and stops. No timer, no fault injection.
+ * Sensor-simulator process: sends a {@link SensorReading} to the critical service every
+ * {@code sensor.periodMs}, and with probability {@code sensor.faultProbability} sends a fault
+ * instead -- a truncated datagram (share {@code sensor.corruptShare}) or an out-of-range lane
+ * offset. Either fault makes the critical service's uncaught {@code Codec.decode} throw.
+ * Optional {@code --count <n>} stops after n sends (tracer/test runs); default runs forever.
  */
 public final class Main {
 
@@ -22,26 +30,75 @@ public final class Main {
     }
 
     private static final Logger LOG = System.getLogger("sensor-sim");
+    private static final String SENSOR_ID = "lane-cam-0";
+
+    /** What a single send carries. */
+    enum Kind { VALID, OUT_OF_RANGE, TRUNCATED }
 
     private Main() {
     }
 
     public static void main(String[] args) throws Exception {
         NetConfig cfg = NetConfig.load(args);
+        long count = parseCount(args);
         LOG.log(Level.INFO, "startup {0}", cfg.describe("sensor-sim"));
 
         InetSocketAddress target = cfg.sensorTarget();
+        Random rng = new Random();
         try (DatagramSocket socket = new DatagramSocket()) {
-            SensorReading reading = new SensorReading("lane-cam-0", 0, System.currentTimeMillis(), 0.0);
-            byte[] bytes = Codec.encode(reading);
-            socket.send(new DatagramPacket(bytes, bytes.length, target));
-            LOG.log(Level.INFO, "tracer sent {0} -> {1}", reading, target);
+            for (long seq = 0; count == 0 || seq < count; seq++) {
+                Kind kind = pick(rng, cfg.sensorFaultProbability(), cfg.sensorCorruptShare());
+                byte[] bytes = payload(kind, seq, rng);
+                socket.send(new DatagramPacket(bytes, bytes.length, target));
+                LOG.log(kind == Kind.VALID ? Level.INFO : Level.WARNING,
+                        "sent seq={0} {1} -> {2}: {3}", seq, kind, target,
+                        new String(bytes, StandardCharsets.UTF_8));
+                Thread.sleep(cfg.sensorPeriodMs());
+            }
         }
+    }
 
-        // TODO(sensor-sim owner): periodic sending every sensor.periodMs, plus fault injection:
-        //   with probability sensor.faultProbability inject either an out-of-range laneOffsetMeters
-        //   or a truncated datagram, chosen by sensor.corruptShare, and log which.
-        //   Everything after this line is the sensor-sim owner's slice.
-        System.exit(0);
+    /** Chooses valid vs. fault, then which fault, from the two configured probabilities. */
+    static Kind pick(Random rng, double faultProbability, double corruptShare) {
+        if (rng.nextDouble() >= faultProbability) {
+            return Kind.VALID;
+        }
+        return rng.nextDouble() < corruptShare ? Kind.TRUNCATED : Kind.OUT_OF_RANGE;
+    }
+
+    /** Builds the datagram bytes for one send of the given kind. */
+    static byte[] payload(Kind kind, long seq, Random rng) throws IOException {
+        long now = System.currentTimeMillis();
+        return switch (kind) {
+            // Within +/-1.5 m so the lane detector sees centred and drifting readings.
+            case VALID -> Codec.encode(new SensorReading(SENSOR_ID, seq, now, rng.nextDouble(-1.5, 1.5)));
+            case TRUNCATED -> {
+                byte[] full = Codec.encode(new SensorReading(SENSOR_ID, seq, now, 0.0));
+                yield Arrays.copyOf(full, full.length / 2);
+            }
+            // SensorReading's constructor rejects this value, so the JSON is written by hand.
+            case OUT_OF_RANGE -> {
+                double offset = (rng.nextBoolean() ? 1 : -1)
+                        * (SensorReading.MAX_LANE_OFFSET_METERS + rng.nextDouble(0.5, 5.0));
+                yield String.format(Locale.ROOT,
+                        "{\"type\":\"SensorReading\",\"sensorId\":\"%s\",\"seq\":%d,\"sentAt\":%d,"
+                                + "\"laneOffsetMeters\":%s}", SENSOR_ID, seq, now, offset)
+                        .getBytes(StandardCharsets.UTF_8);
+            }
+        };
+    }
+
+    /** Returns 0 (run forever) unless {@code --count <positive n>} is given. */
+    private static long parseCount(String[] args) {
+        for (int i = 0; i < args.length - 1; i++) {
+            if ("--count".equals(args[i])) {
+                long n = Long.parseLong(args[i + 1]);
+                if (n <= 0) {
+                    throw new IllegalArgumentException("--count must be positive, was " + n);
+                }
+                return n;
+            }
+        }
+        return 0;
     }
 }
