@@ -3,15 +3,21 @@ package edu.rit.swen755.heartbeat.monitor;
 import edu.rit.swen755.heartbeat.protocol.Codec;
 import edu.rit.swen755.heartbeat.protocol.Message;
 import edu.rit.swen755.heartbeat.protocol.NetConfig;
+import edu.rit.swen755.heartbeat.protocol.ServiceState;
+import edu.rit.swen755.heartbeat.protocol.ServiceStatus;
+import edu.rit.swen755.heartbeat.protocol.StatusReport;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.SocketTimeoutException;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
- * Monitor process (Step 0 tracer). It receives and logs one {@link StatusReport}
- * from the receiver and stops. No transition logic and no timer on the report stream yet.
+ * Monitor process: watches the receiver's {@link StatusReport} stream and logs transitions,
+ * including a silent receiver reaching the FAILED state.
  */
 public final class Main {
 
@@ -22,6 +28,7 @@ public final class Main {
 
     private static final Logger LOG = System.getLogger("monitor");
     private static final int RECEIVE_TIMEOUT_MS = 30_000;
+    private static final int BUFFER_SIZE = 2048;
 
     private Main() {
     }
@@ -30,19 +37,84 @@ public final class Main {
         NetConfig cfg = NetConfig.load(args);
         LOG.log(Level.INFO, "startup {0}", cfg.describe("monitor"));
 
+        String receiverId = "unknown";
+        long lastReceiverSeenMs = System.currentTimeMillis();
+        ServiceState receiverState = ServiceState.HEALTHY;
+        Map<String, ServiceState> lastServiceState = new HashMap<>();
+
         try (DatagramSocket socket = new DatagramSocket(cfg.monitorListenPort())) {
-            socket.setSoTimeout(RECEIVE_TIMEOUT_MS);
-            byte[] buffer = new byte[2048];
-            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-            socket.receive(packet);
-            Message report = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
-            LOG.log(Level.INFO, "tracer received {0} from {1}", report, packet.getSocketAddress());
+            socket.setSoTimeout((int) Math.min(cfg.monitorCheckIntervalMs(), RECEIVE_TIMEOUT_MS));
+
+            while (true) {
+                try {
+                    byte[] buffer = new byte[BUFFER_SIZE];
+                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                    socket.receive(packet);
+
+                    Message message = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+                    if (!(message instanceof StatusReport report)) {
+                        LOG.log(Level.WARNING, "ignored non-StatusReport {0} from {1}",
+                                message, packet.getSocketAddress());
+                        continue;
+                    }
+
+                    long now = System.currentTimeMillis();
+                    receiverId = report.receiverId();
+                    lastReceiverSeenMs = now;
+                    LOG.log(Level.INFO, "received {0} from {1}", report, packet.getSocketAddress());
+
+                    for (ServiceStatus status : report.services()) {
+                        ServiceState previous = lastServiceState.get(status.serviceId());
+                        if (previous != status.state()) {
+                            if (previous == null) {
+                                LOG.log(Level.INFO, "SERVICE {0} {1}",
+                                        new Object[] {status.serviceId(), status.state()});
+                            } else {
+                                LOG.log(Level.INFO, "SERVICE {0} {1} -> {2}",
+                                        new Object[] {status.serviceId(), previous, status.state()});
+                            }
+                            lastServiceState.put(status.serviceId(), status.state());
+                        }
+                    }
+
+                    receiverState = evaluateReceiverState(cfg, receiverId, lastReceiverSeenMs, receiverState);
+                } catch (SocketTimeoutException timeout) {
+                    receiverState = evaluateReceiverState(cfg, receiverId, lastReceiverSeenMs, receiverState);
+                } catch (Exception decodeFailure) {
+                    LOG.log(Level.WARNING, "failed to decode incoming datagram: {0}", decodeFailure.getMessage());
+                }
+            }
+        }
+    }
+
+    private static ServiceState evaluateReceiverState(
+            NetConfig cfg,
+            String receiverId,
+            long lastReceiverSeenMs,
+            ServiceState currentReceiverState) {
+
+        long now = System.currentTimeMillis();
+        long delayMs = Math.max(0L, now - lastReceiverSeenMs);
+        long missed = Math.floorDiv(delayMs, cfg.monitorCheckIntervalMs());
+
+        ServiceState nextState;
+        if (missed <= 0L) {
+            nextState = ServiceState.HEALTHY;
+        } else if (missed >= cfg.monitorMissedCount()) {
+            nextState = ServiceState.FAILED;
+        } else {
+            nextState = ServiceState.SUSPECT;
         }
 
-        // TODO(monitor owner): log and notify on state transitions carried in each StatusReport, and
-        //   evaluate the report stream every monitor.checkIntervalMs with the miss-count rule so a silent
-        //   receiver is logged as "RECEIVER <id> FAILED".
-        //   Everything after this line is your slice.
-        System.exit(0);
+        if (currentReceiverState != nextState) {
+            if (nextState == ServiceState.FAILED) {
+                LOG.log(Level.ERROR, "RECEIVER {0} FAILED", receiverId);
+            } else {
+                LOG.log(Level.INFO, "RECEIVER {0} {1} -> {2}",
+                        new Object[] {receiverId, currentReceiverState, nextState});
+            }
+        }
+
+        return nextState;
     }
 }
