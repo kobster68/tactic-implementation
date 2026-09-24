@@ -36,4 +36,17 @@ class MainTest {
         assertEquals(Main.Kind.TRUNCATED, Main.pick(rng, 1.0, 1.0));
         assertEquals(Main.Kind.OUT_OF_RANGE, Main.pick(rng, 1.0, 0.0));
     }
+
+    @Test
+    void parseCountAcceptsPositiveAndDefaultsToForever() {
+        assertEquals(3, Main.parseCount(new String[] {"--count", "3"}));
+        assertEquals(0, Main.parseCount(new String[] {}));
+    }
+
+    @Test
+    void parseCountRejectsMissingNonNumericAndNonPositive() {
+        assertThrows(IllegalArgumentException.class, () -> Main.parseCount(new String[] {"--count"}));
+        assertThrows(IllegalArgumentException.class, () -> Main.parseCount(new String[] {"--count", "abc"}));
+        assertThrows(IllegalArgumentException.class, () -> Main.parseCount(new String[] {"--count", "0"}));
+    }
 }

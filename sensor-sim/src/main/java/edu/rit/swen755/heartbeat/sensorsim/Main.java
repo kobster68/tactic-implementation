@@ -43,6 +43,11 @@ public final class Main {
         long count = parseCount(args);
         LOG.log(Level.INFO, "startup {0}", cfg.describe("sensor-sim"));
 
+        long periodMs = cfg.sensorPeriodMs();
+        if (periodMs <= 0) {
+            throw new IllegalArgumentException("sensor.periodMs must be positive");
+        }
+
         InetSocketAddress target = cfg.sensorTarget();
         Random rng = new Random();
         try (DatagramSocket socket = new DatagramSocket()) {
@@ -53,7 +58,7 @@ public final class Main {
                 LOG.log(kind == Kind.VALID ? Level.INFO : Level.WARNING,
                         "sent seq={0} {1} -> {2}: {3}", seq, kind, target,
                         new String(bytes, StandardCharsets.UTF_8));
-                Thread.sleep(cfg.sensorPeriodMs());
+                Thread.sleep(periodMs);
             }
         }
     }
@@ -89,10 +94,18 @@ public final class Main {
     }
 
     /** Returns 0 (run forever) unless {@code --count <positive n>} is given. */
-    private static long parseCount(String[] args) {
-        for (int i = 0; i < args.length - 1; i++) {
+    static long parseCount(String[] args) {
+        for (int i = 0; i < args.length; i++) {
             if ("--count".equals(args[i])) {
-                long n = Long.parseLong(args[i + 1]);
+                if (i + 1 >= args.length) {
+                    throw new IllegalArgumentException("--count needs a positive whole number");
+                }
+                long n;
+                try {
+                    n = Long.parseLong(args[i + 1]);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("--count must be a whole number, was " + args[i + 1], e);
+                }
                 if (n <= 0) {
                     throw new IllegalArgumentException("--count must be positive, was " + n);
                 }
