@@ -39,7 +39,7 @@ java -jar "${ROOT_DIR}/critical-service/target/critical-service.jar" \
   --run-for-ms "${RUN_FOR_MS}" > "${LOG_DIR}/critical-service.log" 2>&1 &
 SVC_PID=$!
 sleep "${START_DELAY}"
-java -jar "${ROOT_DIR}/sensor-sim/target/sensor-sim.jar"           > "${LOG_DIR}/sensor-sim.log" 2>&1 &
+java -Dsensor.faultProbability=0 -jar "${ROOT_DIR}/sensor-sim/target/sensor-sim.jar" > "${LOG_DIR}/sensor-sim.log" 2>&1 &
 SIM_PID=$!
 
 status=0
