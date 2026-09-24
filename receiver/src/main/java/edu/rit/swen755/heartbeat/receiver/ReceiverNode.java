@@ -55,6 +55,11 @@ public final class ReceiverNode implements AutoCloseable {
      */
     public ReceiverNode(HeartbeatReceiver receiver, int listenPort, InetSocketAddress reportTarget,
             long checkIntervalMs, String receiverId) throws SocketException {
+        if (checkIntervalMs <= 0) {
+            // Zero spins the checker; negative makes Thread.sleep throw and kills it. Fail before
+            // binding the socket so an invalid value never leaves a port open.
+            throw new IllegalArgumentException("checkIntervalMs must be positive: " + checkIntervalMs);
+        }
         this.receiver = receiver;
         this.reportTarget = reportTarget;
         this.checkIntervalMs = checkIntervalMs;

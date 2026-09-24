@@ -1,5 +1,6 @@
 package edu.rit.swen755.heartbeat.receiver;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import edu.rit.swen755.heartbeat.protocol.Codec;
@@ -127,6 +128,18 @@ class ReceiverNodeIntegrationTest {
                 assertOrderedHealthySuspectFailed(states);
             }
         }
+    }
+
+    @Test
+    void rejectsNonPositiveCheckInterval() {
+        HeartbeatReceiver receiver = new HeartbeatReceiver(1_000, 3, Clock.SYSTEM);
+        InetSocketAddress target = new InetSocketAddress("localhost", 5_003);
+        // Zero would spin the checker sending reports as fast as it can; a negative value makes
+        // Thread.sleep throw and quietly kills the checker thread. Reject both before binding.
+        assertThrows(IllegalArgumentException.class,
+                () -> new ReceiverNode(receiver, 0, target, 0, "receiver-test"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ReceiverNode(receiver, 0, target, -1, "receiver-test"));
     }
 
     // ---- helpers ---------------------------------------------------------------------------
