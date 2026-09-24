@@ -29,23 +29,36 @@ public final class Main {
     private static final Logger LOG = System.getLogger("monitor");
     private static final int RECEIVE_TIMEOUT_MS = 30_000;
     private static final int BUFFER_SIZE = 2048;
+    private static volatile boolean running = true;
 
     private Main() {
     }
 
     public static void main(String[] args) throws Exception {
         NetConfig cfg = NetConfig.load(args);
+        long monitorCheckIntervalMs = cfg.monitorCheckIntervalMs();
+        long receiverCheckIntervalMs = cfg.receiverCheckIntervalMs();
+        if (monitorCheckIntervalMs <= 0) {
+            throw new IllegalArgumentException("monitor.checkIntervalMs must be positive");
+        }
+        if (receiverCheckIntervalMs <= 0) {
+            throw new IllegalArgumentException("receiver.checkIntervalMs must be positive");
+        }
         LOG.log(Level.INFO, "startup {0}", cfg.describe("monitor"));
 
-        String receiverId = "unknown";
+        String receiverId = null;
         long lastReceiverSeenMs = System.currentTimeMillis();
         ServiceState receiverState = ServiceState.HEALTHY;
         Map<String, ServiceState> lastServiceState = new HashMap<>();
 
         try (DatagramSocket socket = new DatagramSocket(cfg.monitorListenPort())) {
-            socket.setSoTimeout((int) Math.min(cfg.monitorCheckIntervalMs(), RECEIVE_TIMEOUT_MS));
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                running = false;
+                socket.close();
+            }));
+            socket.setSoTimeout((int) Math.min(monitorCheckIntervalMs, RECEIVE_TIMEOUT_MS));
 
-            while (true) {
+            while (running) {
                 try {
                     byte[] buffer = new byte[BUFFER_SIZE];
                     DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
@@ -80,27 +93,36 @@ public final class Main {
                     receiverState = evaluateReceiverState(cfg, receiverId, lastReceiverSeenMs, receiverState);
                 } catch (SocketTimeoutException timeout) {
                     receiverState = evaluateReceiverState(cfg, receiverId, lastReceiverSeenMs, receiverState);
-                } catch (Exception decodeFailure) {
-                    LOG.log(Level.WARNING, "failed to decode incoming datagram: {0}", decodeFailure.getMessage());
+                } catch (IllegalArgumentException | IllegalStateException decodeFailure) {
+                    LOG.log(Level.WARNING, "invalid incoming datagram: {0}", decodeFailure.getMessage());
+                } catch (Exception unexpected) {
+                    if (!running) {
+                        break;
+                    }
+                    LOG.log(Level.WARNING, "monitor loop caught unexpected error: {0}", unexpected.getMessage());
                 }
             }
         }
     }
 
-    private static ServiceState evaluateReceiverState(
+    static ServiceState evaluateReceiverState(
             NetConfig cfg,
             String receiverId,
             long lastReceiverSeenMs,
             ServiceState currentReceiverState) {
 
+        if (receiverId == null || receiverId.isBlank()) {
+            return currentReceiverState;
+        }
+
         long now = System.currentTimeMillis();
         long delayMs = Math.max(0L, now - lastReceiverSeenMs);
-        long missed = Math.floorDiv(delayMs, cfg.monitorCheckIntervalMs());
+        long missed = Math.floorDiv(delayMs, cfg.receiverCheckIntervalMs());
 
         ServiceState nextState;
         if (missed <= 0L) {
             nextState = ServiceState.HEALTHY;
-        } else if (missed >= cfg.monitorMissedCount()) {
+        } else if (delayMs >= cfg.monitorExpireMs()) {
             nextState = ServiceState.FAILED;
         } else {
             nextState = ServiceState.SUSPECT;
