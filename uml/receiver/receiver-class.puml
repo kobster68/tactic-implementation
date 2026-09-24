@@ -1,0 +1,127 @@
+@startuml receiver-class
+title Receiver slice — class diagram (SWEN-755 heartbeat tactic, Group 1)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+hide empty members
+
+' ============ receiver module (this slice) ============
+package "receiver" {
+
+  class Main <<entry point>> {
+    + {static} main(args : String[])
+  }
+
+  interface Clock <<functional>> {
+    + millis() : long
+    + {static} SYSTEM : Clock
+  }
+
+  class HeartbeatReceiver <<watchdog>> {
+    - periodMs : long
+    - missedCount : int
+    - clock : Clock
+    - lastSeen : Map<String, Long>
+    --
+    + pitAPat(beat : Heartbeat)
+    ~ updateTime(serviceId : String)
+    + missed(serviceId : String) : int
+    + state(serviceId : String) : ServiceState
+    + checkAlive(serviceId : String) : boolean
+    + check() : List<ServiceStatus>
+    + expireMs() : long
+  }
+
+  class ReceiverNode <<runtime>> {
+    - receiver : HeartbeatReceiver
+    - socket : DatagramSocket
+    - reportTarget : InetSocketAddress
+    - checkIntervalMs : long
+    - receiverId : String
+    - receiveThread : Thread
+    - checkThread : Thread
+    --
+    + start()
+    + close()
+    + listenPort() : int
+    - receiveLoop()
+    - handle(packet : DatagramPacket)
+    - checkLoop()
+    - tick()
+    - logTransitions(statuses : List<ServiceStatus>)
+  }
+}
+
+interface AutoCloseable
+ReceiverNode ..|> AutoCloseable
+
+note right of HeartbeatReceiver
+  Course slide 8/10 roles:
+  • pitAPat()   = beat handler
+  • updateTime() = stamp lastSeen = now
+  • checkAlive() = boolean liveness (true unless FAILED)
+  • expireMs()  = expireTime, **derived** = missedCount x periodMs
+  Aliveness rule (each check tick):
+  missed = floor((now - lastSeen) / periodMs)
+  HEALTHY when 0, SUSPECT below missedCount, FAILED at/above.
+  No sockets or threads here → testable with an injected Clock.
+end note
+
+note bottom of ReceiverNode
+  Course slide 9: receiving and checking run on
+  separate threads. The checker's StatusReport stream
+  doubles as the receiver's own heartbeat to the monitor.
+  A malformed datagram is logged and skipped, never fatal.
+end note
+
+' ============ protocol module (shared; consumed, never edited here) ============
+package "protocol (shared)" <<Frame>> {
+  class Heartbeat <<record>> {
+    serviceId : String
+    seq : long
+    sentAt : long
+  }
+  class StatusReport <<record>> {
+    receiverId : String
+    seq : long
+    sentAt : long
+    services : List<ServiceStatus>
+  }
+  class ServiceStatus <<record>> {
+    serviceId : String
+    state : ServiceState
+    lastSeen : long
+    missedCount : int
+  }
+  enum ServiceState {
+    HEALTHY
+    SUSPECT
+    FAILED
+  }
+  class Codec {
+    + {static} encode(m : Message) : byte[]
+    + {static} decode(bytes : byte[]) : Message
+  }
+  class NetConfig {
+    + receiverListenPort() : int
+    + receiverReportTarget() : InetSocketAddress
+    + heartbeatPeriodMs() : long
+    + receiverCheckIntervalMs() : long
+    + receiverMissedCount() : int
+  }
+}
+
+' ============ relationships ============
+Main ..> NetConfig : loads
+Main --> HeartbeatReceiver : creates
+Main --> ReceiverNode : creates
+ReceiverNode o--> HeartbeatReceiver : delegates to
+HeartbeatReceiver --> Clock : reads "now"
+HeartbeatReceiver ..> Heartbeat : consumes (pitAPat)
+HeartbeatReceiver ..> ServiceStatus : produces (check)
+ReceiverNode ..> Codec : decode beats / encode reports
+ReceiverNode ..> StatusReport : sends to monitor
+StatusReport *--> "*" ServiceStatus
+ServiceStatus --> ServiceState
+
+@enduml
