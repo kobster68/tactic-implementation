@@ -123,7 +123,13 @@ public final class Main {
                 if (runForNanos != 0 || i + 1 >= args.length) {
                     throw new IllegalArgumentException("Use --run-for-ms once with a positive millisecond value");
                 }
-                long runForMs = Long.parseLong(args[++i]);
+                long runForMs;
+                try {
+                    runForMs = Long.parseLong(args[++i]);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException(
+                            "--run-for-ms must be a whole number of milliseconds", e);
+                }
                 if (runForMs <= 0 || runForMs > Long.MAX_VALUE / 1_000_000L) {
                     throw new IllegalArgumentException("--run-for-ms must be positive and fit in nanoseconds");
                 }
