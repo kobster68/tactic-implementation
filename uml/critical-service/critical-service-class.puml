@@ -1,0 +1,84 @@
+@startuml critical-service-class
+title Critical-service slice — class diagram (SWEN-755 heartbeat tactic, Group 1)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype polyline
+skinparam nodesep 35
+skinparam ranksep 40
+left to right direction
+hide empty members
+
+' ============ critical-service module (this slice) ============
+package "critical-service" {
+  class Main <<entry point>> {
+    - {static} LOG : System.Logger
+    + {static} main(args : String[])
+    ~ {static} parseRunForNanos(args : String[]) : long
+  }
+
+  class LaneDetector {
+    - {static} DRIFT_THRESHOLD_METERS : double = 0.5
+    + assess(reading : SensorReading) : LaneAssessment
+  }
+
+  enum LaneAssessment {
+    CENTERED
+    DRIFTING_LEFT
+    DRIFTING_RIGHT
+  }
+}
+
+note left of Main
+  Receives readings and sends periodic heartbeats.
+  Malformed input stops the service and its heartbeats.
+end note
+
+note bottom of LaneDetector
+  offset < -0.5 m: DRIFTING_LEFT
+  offset > +0.5 m: DRIFTING_RIGHT
+  Otherwise CENTERED (boundaries included).
+end note
+
+' ============ shared contract (relevant members only) ============
+package "protocol (shared)" <<Frame>> {
+  interface Message <<sealed>>
+  class SensorReading <<record>> {
+    sensorId : String
+    seq : long
+    sentAt : long
+    laneOffsetMeters : double
+  }
+  class Heartbeat <<record>> {
+    serviceId : String
+    seq : long
+    sentAt : long
+  }
+  class Codec {
+    + {static} encode(message : Message) : byte[]
+    + {static} decode(bytes : byte[]) : Message
+  }
+  class NetConfig {
+    + {static} load(args : String[]) : NetConfig
+    + serviceListenPort() : int
+    + serviceHeartbeatTarget() : InetSocketAddress
+    + heartbeatPeriodMs() : long
+  }
+}
+
+SensorReading ..|> Message
+Heartbeat ..|> Message
+Main ..> NetConfig : loads
+Main ..> LaneDetector : calls
+Main ..> Codec : uses
+LaneDetector ..> SensorReading : reads
+LaneDetector ..> LaneAssessment : returns
+
+' Message types are already shown in method signatures; omit redundant dependency arrows.
+
+note bottom of SensorReading
+  Validates sensor ID, sequence, and a finite
+  lane offset within [-3.5, 3.5] m.
+end note
+
+@enduml
