@@ -1,0 +1,49 @@
+@startuml sensor-sim-sequence
+title Sensor-sim slice — sequence: readings, then an injected fault
+
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+
+box "sensor-sim process (this slice)" #F5F5F5
+  participant "Main" as SIM
+end box
+participant "NetConfig\n(shared)" as CFG
+participant "critical-service\n(teammate slice)" as CS
+participant "receiver\n(teammate slice)" as RCV
+
+== startup ==
+SIM -> CFG : load(args)
+CFG --> SIM : sensorTarget, periodMs,\nfaultProbability, corruptShare
+SIM -> SIM : validate periodMs > 0,\nparseCount(args)
+
+== normal operation ==
+note over CS, RCV
+  Independently of readings, the critical service sends a
+  Heartbeat to the receiver (UDP :5002) on its own
+  heartbeat.periodMs timer, for as long as it is alive.
+end note
+loop every sensor.periodMs (until --count sends, if given)
+  SIM -> SIM : kind = pick(rng, faultProbability, corruptShare)
+  SIM -> SIM : bytes = payload(kind, seq, rng)
+  alt kind == VALID  (probability 1 - faultProbability)
+    SIM -> CS : SensorReading  (UDP :5001)
+    CS -> CS : Codec.decode → LaneDetector.assess()\nlog CENTERED / DRIFTING_LEFT / DRIFTING_RIGHT
+  else kind == TRUNCATED or OUT_OF_RANGE  (probability faultProbability)
+    SIM -> CS : broken datagram  (logged at WARNING with exact bytes)
+    CS -> CS : Codec.decode throws\n(JsonEOFException / ValueInstantiationException)
+    destroy CS
+    note over RCV
+      Heartbeats stop. The receiver sees missed beats climb:
+      HEALTHY -> SUSPECT -> FAILED
+      (see receiver-sequence.puml)
+    end note
+  end
+end
+
+note over SIM
+  The sim keeps sending after the crash; its UDP
+  sends are fire-and-forget, so it never notices.
+  Tracer runs use -Dsensor.faultProbability=0 --count 3
+  to stay deterministic.
+end note
+@enduml
