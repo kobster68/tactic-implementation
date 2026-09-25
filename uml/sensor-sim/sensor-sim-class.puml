@@ -1,0 +1,77 @@
+@startuml sensor-sim-class
+!pragma layout smetana
+title Sensor-sim slice — class diagram (SWEN-755 heartbeat tactic, Group 1)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+hide empty members
+
+' ============ sensor-sim module (this slice) ============
+package "sensor-sim" {
+
+  class Main <<entry point>> {
+    - {static} LOG : System.Logger
+    - {static} SENSOR_ID : String = "lane-cam-0"
+    --
+    + {static} main(args : String[])
+    ~ {static} pick(rng : Random, faultProbability : double, corruptShare : double) : Kind
+    ~ {static} payload(kind : Kind, seq : long, rng : Random) : byte[]
+    ~ {static} parseCount(args : String[]) : long
+  }
+
+  enum Kind {
+    VALID
+    OUT_OF_RANGE
+    TRUNCATED
+  }
+}
+
+Main +-- Kind
+
+note right of Main
+  Each period: pick() decides valid vs. fault,
+  payload() builds the bytes, one UDP send,
+  then sleep sensor.periodMs.
+  --count n stops after n sends (tracer/tests);
+  default (0) runs forever.
+  Startup rejects sensor.periodMs <= 0 and a
+  missing / non-numeric / non-positive --count.
+end note
+
+note bottom of Kind
+  VALID: offset in [-1.5, 1.5] m, encoded by Codec.
+  TRUNCATED: first half of a valid datagram.
+  OUT_OF_RANGE: |offset| > MAX_LANE_OFFSET_METERS,
+  JSON written by hand because the SensorReading
+  constructor would reject it.
+  Both faults make the critical service's
+  Codec.decode throw, crashing it (the injected fault).
+end note
+
+' ============ protocol module (shared; consumed, never edited here) ============
+package "protocol (shared)" <<Frame>> {
+  class SensorReading <<record>> {
+    sensorId : String
+    seq : long
+    sentAt : long
+    laneOffsetMeters : double
+    + {static} MAX_LANE_OFFSET_METERS : double = 3.5
+  }
+  class Codec {
+    + {static} encode(m : Message) : byte[]
+    + {static} decode(bytes : byte[]) : Message
+  }
+  class NetConfig {
+    + {static} load(args : String[]) : NetConfig
+    + sensorTarget() : InetSocketAddress
+    + sensorPeriodMs() : long
+    + sensorFaultProbability() : double
+    + sensorCorruptShare() : double
+  }
+}
+
+' ============ relationships ============
+Main ..> NetConfig : loads
+Main ..> SensorReading : creates (VALID, TRUNCATED)
+Main ..> Codec : encodes
+@enduml
