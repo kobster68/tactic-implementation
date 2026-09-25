@@ -75,4 +75,18 @@ trap cleanup INT TERM EXIT
 echo "Simulation running. Press Ctrl+C to stop."
 echo "Logs: ${LOG_DIR}"
 
-wait "${MON_PID}"
+echo "Waiting for monitor to report critical-service FAILED..."
+
+# Keep the simulation alive until the monitor confirms the service failure.
+# The log pattern is specific to the critical service so receiver failures do
+# not end the run prematurely.
+while kill -0 "${MON_PID}" 2>/dev/null; do
+  if grep -q "SERVICE critical-service .*-> FAILED" "${LOG_DIR}/monitor.log" 2>/dev/null; then
+    echo "Monitor reported critical-service FAILED."
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "Monitor exited before reporting critical-service FAILED." >&2
+exit 1
