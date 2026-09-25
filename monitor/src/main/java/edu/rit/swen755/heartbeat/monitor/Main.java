@@ -6,6 +6,7 @@ import edu.rit.swen755.heartbeat.protocol.NetConfig;
 import edu.rit.swen755.heartbeat.protocol.ServiceState;
 import edu.rit.swen755.heartbeat.protocol.ServiceStatus;
 import edu.rit.swen755.heartbeat.protocol.StatusReport;
+import java.io.IOException;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.net.DatagramPacket;
@@ -93,7 +94,10 @@ public final class Main {
                     receiverState = evaluateReceiverState(cfg, receiverId, lastReceiverSeenMs, receiverState);
                 } catch (SocketTimeoutException timeout) {
                     receiverState = evaluateReceiverState(cfg, receiverId, lastReceiverSeenMs, receiverState);
-                } catch (IllegalArgumentException | IllegalStateException decodeFailure) {
+                } catch (IOException | IllegalArgumentException | IllegalStateException decodeFailure) {
+                    // Codec.decode throws IOException for a malformed/truncated datagram (Jackson
+                    // wraps a record-validation error as IOException too); keep the runtime types
+                    // for any direct validation error. Logged and skipped, never fatal.
                     LOG.log(Level.WARNING, "invalid incoming datagram: {0}", decodeFailure.getMessage());
                 } catch (Exception unexpected) {
                     if (!running) {
@@ -120,7 +124,12 @@ public final class Main {
         long missed = Math.floorDiv(delayMs, cfg.receiverCheckIntervalMs());
 
         ServiceState nextState;
-        if (missed <= 0L) {
+        if (missed <= 1L) {
+            // Tolerate up to one report interval of cadence jitter. The monitor polls at
+            // monitor.checkIntervalMs, which equals the receiver's report cadence by default, so a
+            // report that lands a hair after the poll boundary is one interval "late" yet perfectly
+            // healthy; treating that as SUSPECT flapped the log HEALTHY<->SUSPECT every tick. FAILED
+            // still fires at monitorExpireMs (missedCount x receiver.checkIntervalMs).
             nextState = ServiceState.HEALTHY;
         } else if (delayMs >= cfg.monitorExpireMs()) {
             nextState = ServiceState.FAILED;

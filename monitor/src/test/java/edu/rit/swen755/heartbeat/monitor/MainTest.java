@@ -43,6 +43,18 @@ class MainTest {
     }
 
     @Test
+    void receiverOneReportIntervalLateStaysHealthy() {
+        NetConfig cfg = NetConfig.load(new String[0]);
+        long now = System.currentTimeMillis();
+        // One report interval of cadence jitter is normal, not a miss worth flagging SUSPECT.
+        long lastSeen = now - cfg.receiverCheckIntervalMs();
+
+        ServiceState state = Main.evaluateReceiverState(cfg, "receiver-0", lastSeen, ServiceState.HEALTHY);
+
+        assertEquals(ServiceState.HEALTHY, state);
+    }
+
+    @Test
     void receiverBecomesSuspectBeforeTheFailureThreshold() {
         NetConfig cfg = NetConfig.load(new String[0]);
         long now = System.currentTimeMillis();
