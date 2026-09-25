@@ -46,7 +46,8 @@ sensor-sim uses them and never edits them.
 1. **Startup:** load the configuration, validate the period, and parse `--count`.
 2. **Send loop** (every `sensor.periodMs`):
    - **Valid reading:** the critical service decodes it, assesses the lane (CENTERED /
-     DRIFTING_LEFT / DRIFTING_RIGHT) and keeps sending heartbeats to the receiver on its own timer.
+     DRIFTING_LEFT / DRIFTING_RIGHT) and keeps running. Its heartbeats to the receiver run on a
+     separate timer and don't depend on readings.
    - **Fault:** the sim logs the exact bytes at WARNING and sends them. The critical service's
      `Codec.decode` throws (`JsonEOFException` for truncated, `ValueInstantiationException` for out
      of range) and the process dies. Its heartbeats stop, and the receiver moves it
