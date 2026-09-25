@@ -17,7 +17,8 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="${ROOT_DIR}/target/tracer-logs"
 START_DELAY="${TRACER_START_DELAY:-1}" # seconds to let each listener bind before the next start
 RUN_FOR_MS="${TRACER_RUN_FOR_MS:-5000}" # critical-service demo runtime; allow time for sensor startup
-GRACE_SECS="${TRACER_GRACE_SECS:-4}"    # after producers stop, let the watchdog reach FAILED
+GRACE_SECS="${TRACER_GRACE_SECS:-6}"    # after producers stop, let the watchdog reach FAILED
+                                        # (needs ~ missedCount x heartbeat.periodMs + one check)
 
 cd "${ROOT_DIR}"
 
@@ -80,9 +81,17 @@ for name in sensor-sim critical-service receiver monitor; do
   echo
 done
 
+# Confirm the tactic actually worked: the receiver must have reported the now-silent
+# critical service FAILED within the grace window. Without this, a detection bug or too-short
+# grace would still print OK on green process exits alone.
+if [ "${status}" -eq 0 ] && ! grep -q "critical-service FAILED" "${LOG_DIR}/receiver.log" 2>/dev/null; then
+  echo "TRACER CHECK FAILED: receiver never reported critical-service FAILED within ${GRACE_SECS}s" >&2
+  status=1
+fi
+
 if [ "${status}" -ne 0 ]; then
   echo "TRACER RESULT: FAILED" >&2
 else
-  echo "TRACER RESULT: OK (producers exited cleanly; watchdog reached FAILED; daemons stopped -- see logs)"
+  echo "TRACER RESULT: OK (producers exited cleanly; receiver reported critical-service FAILED; daemons stopped)"
 fi
 exit "${status}"
