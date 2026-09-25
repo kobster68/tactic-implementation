@@ -1,0 +1,100 @@
+@startuml system-class
+title Heartbeat fault-detection tactic — system class diagram
+
+left to right direction
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype ortho
+hide empty members
+
+package "sensor-sim\nprocess" {
+  class SensorSimulator <<entry point>> {
+    + main(args : String[])
+    + pick(...) : Kind
+    + payload(...) : byte[]
+  }
+}
+
+package "critical-service\nprocess" {
+  class CriticalService <<entry point>> {
+    + main(args : String[])
+  }
+  class LaneDetector {
+    + assess(reading : SensorReading) : LaneAssessment
+  }
+  enum LaneAssessment {
+    CENTERED
+    DRIFTING_LEFT
+    DRIFTING_RIGHT
+  }
+}
+
+package "receiver\nprocess" {
+  class ReceiverNode <<runtime>> {
+    + start()
+    + close()
+  }
+  class HeartbeatReceiver <<watchdog>> {
+    + pitAPat(beat : Heartbeat)
+    + check() : List<ServiceStatus>
+    + checkAlive(serviceId : String) : boolean
+  }
+}
+
+package "monitor\nprocess" {
+  class Monitor <<entry point>> {
+    + main(args : String[])
+    + evaluateReceiverState(...) : ServiceState
+  }
+}
+
+package "shared protocol" {
+  class SensorReading <<record>> {
+    laneOffsetMeters : double
+  }
+  class Heartbeat <<record>> {
+    serviceId : String
+    seq : long
+  }
+  class StatusReport <<record>> {
+    receiverId : String
+    services : List<ServiceStatus>
+  }
+  class ServiceStatus <<record>> {
+    serviceId : String
+    state : ServiceState
+  }
+  enum ServiceState {
+    HEALTHY
+    SUSPECT
+    FAILED
+  }
+}
+
+CriticalService --> LaneDetector : uses
+LaneDetector --> LaneAssessment
+
+SensorSimulator ..> CriticalService : SensorReading\nUDP :5001
+CriticalService ..> ReceiverNode : Heartbeat\nUDP :5002
+ReceiverNode o--> HeartbeatReceiver
+ReceiverNode ..> Monitor : StatusReport\nUDP :5003
+StatusReport *--> "*" ServiceStatus
+ServiceStatus --> ServiceState
+
+note top of SensorSimulator
+  Randomly emits valid or corrupted sensor payloads.
+end note
+
+note top of CriticalService
+  A malformed reading terminates the service and heartbeats.
+end note
+
+note top of HeartbeatReceiver
+  Converts missing beats into HEALTHY, SUSPECT, or FAILED.
+end note
+
+note top of Monitor
+  Also detects silence from the receiver's reports.
+end note
+
+@enduml

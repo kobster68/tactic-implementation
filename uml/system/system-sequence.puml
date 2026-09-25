@@ -1,0 +1,50 @@
+@startuml system-sequence
+title Heartbeat fault-detection tactic — system sequence diagram
+
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+hide footbox
+
+participant "sensor-sim\nprocess" as SIM
+participant "critical-service\nprocess" as SVC
+participant "receiver\nprocess" as RX
+participant "monitor\nprocess" as MON
+
+== normal operation ==
+loop sensor.periodMs
+  SIM ->> SVC : SensorReading (UDP :5001)
+  SVC -> SVC : decode and assess lane position
+end
+
+loop heartbeat.periodMs
+  SVC ->> RX : Heartbeat (UDP :5002)
+  RX -> RX : update last-seen
+end
+
+loop receiver.checkIntervalMs
+  RX -> RX : evaluate service state
+  RX ->> MON : StatusReport (UDP :5003)
+  MON -> MON : log state transitions
+end
+
+== random sensor fault ==
+SIM ->> SVC : truncated or out-of-range reading
+SVC -> SVC : uncaught decode / validation exception
+destroy SVC
+
+note over RX : Heartbeats stop.
+
+loop receiver.checkIntervalMs
+  RX -> RX : missed beats increase\nHEALTHY -> SUSPECT -> FAILED
+  RX ->> MON : StatusReport(FAILED)
+  MON -> MON : log service failure
+end
+
+== receiver silence ==
+destroy RX
+note over MON : StatusReports stop.
+loop monitor.checkIntervalMs
+  MON -> MON : HEALTHY -> SUSPECT -> FAILED\nfor the receiver
+end
+
+@enduml
