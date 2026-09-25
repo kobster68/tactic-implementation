@@ -1,0 +1,83 @@
+@startuml monitor-sequence
+title Monitor slice — sequence: status reports and receiver silence
+
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+
+participant "Monitor Main" as MON
+participant "NetConfig\n(shared)" as CFG
+participant "UDP receiver\n(shared runtime)" as UDP
+participant "Receiver process" as RCV
+participant "Codec\n(shared)" as CODEC
+participant "Logger" as LOG
+
+== startup ==
+MON -> CFG : load(args)
+CFG --> MON : config
+MON -> MON : validate positive check intervals\nand monitor.missedCount >= 1
+MON -> CFG : monitorListenPort(), monitorCheckIntervalMs(),\nreceiverCheckIntervalMs(), monitorExpireMs()
+MON -> LOG : INFO startup + effective configuration
+MON -> UDP : bind(listenPort)
+MON -> UDP : setSoTimeout(min(checkIntervalMs, 30000))
+MON -> MON : register shutdown hook\n(close socket, set running=false)
+
+== receive and monitor ==
+loop while running
+  MON -> UDP : receive(packet)
+  alt report datagram arrives
+    RCV -> UDP : send StatusReport (UDP)
+    UDP --> MON : packet bytes + sender address
+    MON -> CODEC : decode(packet bytes)
+    CODEC --> MON : Message
+    alt decoded message is not a StatusReport
+      MON -> LOG : WARNING ignored non-StatusReport
+      note right of MON
+        No receiver-seen timestamp update;
+        the next receive starts.
+      end note
+    else valid StatusReport
+      MON -> MON : update receiverId and lastReceiverSeenMs
+      MON -> LOG : INFO received report
+      loop each ServiceStatus in report
+        MON -> MON : compare with lastServiceState[serviceId]
+        alt first state or changed state
+          MON -> LOG : INFO initial state or transition
+          MON -> MON : save new service state
+        else state unchanged
+          MON -> MON : leave state unchanged
+        end
+      end
+      MON -> MON : evaluateReceiverState(config, receiverId,\nlastReceiverSeenMs, receiverState)
+      note right of MON
+        If no receiverId, keep current state.
+        Else FAILED when silence >= monitorExpireMs;
+        HEALTHY within receiver interval + half;
+        SUSPECT otherwise. Log state transitions.
+      end note
+    end
+  else receive timeout (check interval)
+    UDP --> MON : SocketTimeoutException
+    MON -> MON : evaluateReceiverState(...)
+    alt state changed to FAILED
+      MON -> LOG : ERROR RECEIVER id FAILED
+    else state changed to HEALTHY or SUSPECT
+      MON -> LOG : INFO RECEIVER id old -> new
+    else unchanged
+      MON -> MON : no transition log
+    end
+  else malformed datagram / decode validation error
+    MON -> CODEC : decode(packet bytes)
+    CODEC --> MON : IOException / validation error
+    MON -> LOG : WARNING invalid incoming datagram
+    note right of MON
+      Skip this datagram; keep monitoring.
+    end note
+  end
+end
+
+== shutdown ==
+MON -> MON : shutdown hook sets running=false
+MON -> UDP : close()
+UDP --> MON : receive unblocked with SocketException
+MON -> MON : exit loop cleanly
+@enduml

@@ -1,0 +1,84 @@
+@startuml monitor-class
+!pragma layout smetana
+title Monitor slice — class diagram (SWEN-755 heartbeat tactic, Group 1)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+hide empty members
+
+' ============ monitor module (this slice) ============
+package "monitor" {
+  class Main <<entry point>> {
+    - {static} LOG : System.Logger
+    - {static} RECEIVE_TIMEOUT_MS : int = 30000
+    - {static} BUFFER_SIZE : int = 2048
+    - {static} running : boolean
+    --
+    + {static} main(args : String[]) : void
+    ~ {static} evaluateReceiverState(cfg : NetConfig, receiverId : String, lastReceiverSeenMs : long, currentReceiverState : ServiceState) : ServiceState
+  }
+}
+
+note right of Main
+  main() loads config, validates positive
+  intervals and missedCount, binds UDP and
+  processes reports until shutdown.
+
+  Tracks the most recent state per service,
+  plus the last report time and state for
+  the receiver (all local to main()).
+  evaluateReceiverState() handles receiver
+  silence on both report arrival and timeout.
+end note
+
+' ============ protocol module (shared; consumed, never edited here) ============
+package "protocol (shared)" <<Frame>> {
+  interface Message
+  class Codec {
+    + {static} decode(bytes : byte[]) : Message
+  }
+  class NetConfig {
+    + {static} load(args : String[]) : NetConfig
+    + monitorListenPort() : int
+    + monitorCheckIntervalMs() : long
+    + monitorMissedCount() : int
+    + monitorExpireMs() : long
+    + receiverCheckIntervalMs() : long
+    + describe(processName : String) : String
+  }
+  class StatusReport <<record>> {
+    receiverId : String
+    seq : long
+    sentAt : long
+    services : List<ServiceStatus>
+  }
+  class ServiceStatus <<record>> {
+    serviceId : String
+    state : ServiceState
+    lastSeen : long
+    missedCount : int
+  }
+  enum ServiceState {
+    HEALTHY
+    SUSPECT
+    FAILED
+  }
+}
+
+StatusReport ..|> Message
+StatusReport *-- "0..*" ServiceStatus
+ServiceStatus --> ServiceState
+Main ..> NetConfig : loads / reads thresholds
+Main ..> Codec : decodes datagram
+Main ..> StatusReport : accepts
+Main ..> ServiceStatus : tracks transitions
+Main ..> ServiceState : tracks receiver state
+
+note bottom of ServiceState
+  Receiver-silence thresholds:
+  FAILED at monitorExpireMs() =
+  monitor.missedCount × receiver.checkIntervalMs.
+  Otherwise HEALTHY within 1.5 report intervals,
+  SUSPECT after that grace period.
+end note
+@enduml
