@@ -245,5 +245,5 @@ tactic-implementation/
   receiver/                   Process 2 (watchdog): receives Heartbeat, sends StatusReport
   monitor/                    Process 3: receives StatusReport
   scripts/run-tracer.sh       bounded four-process tracer with receiver failure check
-  uml/                        TODO
+  uml/                        class/sequence diagrams and rendered PNGs
 ```
