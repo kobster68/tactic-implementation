@@ -232,7 +232,7 @@ message records, JSON codec, configuration loader, and default properties used a
 - [x] **Code** -- the four processes and the shared `protocol` module (this repo).
 - [x] **ReadMe** -- this file.
 - [x] **Executable packaging** -- `mvn package` produces the four self-contained runnable jars.
-- [ ] **UML class diagram + sequence diagrams, with narrative** -- TODO
+- [x] **UML class diagram + sequence diagrams, with narrative** -- UML diagrams and narrative are in respective folders under `uml/`.
 
 ## Module layout
 
