@@ -80,21 +80,46 @@ also stop detection. The localhost tracer alone does not demonstrate processor-f
 Requires JDK 21 and Maven 3.9+ (tests verified with Java 21.0.12.1, Maven 3.9.16).
 Run Maven commands from the repository root. Java and Maven must be on `PATH`.
 
+### Build
+
 ```bash
 # build all modules, run tests, and produce self-contained runnable jars
 mvn -q package
+```
+
+### Automated simulations
+
+The scripts start the processes in the required order and manage their shutdown.
+
+```bash
 
 # run the bounded tracer (builds, launches all four, prints the logs)
 bash scripts/run-tracer.sh
 
-# alternatively, start each process in its own terminal, in this order
+# run the continuous fault-injection simulation
+bash scripts/run-system.sh
+```
+
+`run-tracer.sh` is a short, deterministic validation run. It disables sensor faults,
+sends a fixed number of readings, and checks the receiver's failure report after the
+bounded service run. Its logs are written to `target/tracer-logs/`.
+
+`run-system.sh` is a continuous demonstration of the full fault path. It uses the simulator's
+normal random fault probability, exits after the monitor reports `critical-service FAILED`,
+and writes its logs to `target/system-logs/`.
+
+### Manual launch
+
+Alternatively, start each process in its own terminal in this order:
+
+```bash
+
 java -jar monitor/target/monitor.jar
 java -jar receiver/target/receiver.jar
 java -jar critical-service/target/critical-service.jar
 java -jar sensor-sim/target/sensor-sim.jar
-
-# override any config value at launch: -D flags are JVM options and must come BEFORE
-# -jar; --config names an override file and is a program argument, so it comes AFTER the jar
+# Override any config value at launch: -D flags are JVM options and must come BEFORE
+# -jar; --config names an override file and is a program argument, so it comes AFTER the jar.
 java -Dmonitor.listen.port=6003 -jar monitor/target/monitor.jar
 java -jar sensor-sim/target/sensor-sim.jar --config ./my-hosts.properties
 ```
@@ -112,12 +137,11 @@ before `-jar`, and restart the critical service. Its next heartbeat restores `HE
 receiver failure, stop the receiver after the monitor has received reports; the monitor should log
 `RECEIVER receiver-1 FAILED` after the configured silence window and a subsequent check.
 
-The Bash tracer is intended for macOS/Linux and Windows Git Bash. It disables sensor faults,
-sends three sensor readings, runs the service for five seconds, then allows six seconds for
-detection before stopping the receiver and monitor. Logs are in `target/tracer-logs/`. Its success
-check requires clean producer exits, daemons still running before cleanup, and a receiver log
-reporting service failure; it does not assert delivery of that failure to the monitor. The normal
-timed shutdown demonstrates silence detection, not the assignment's random crash.
+The automated scripts are intended for macOS/Linux and Windows Git Bash. The tracer disables
+sensor faults, sends three sensor readings, runs the service for five seconds, then allows six
+seconds for detection before stopping the receiver and monitor. Its success check requires clean
+producer exits, daemons still running before cleanup, and a receiver log reporting service
+failure; it does not assert delivery of that failure to the monitor.
 
 ```bash
 # optional bounded process runs
