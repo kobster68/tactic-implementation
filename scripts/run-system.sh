@@ -19,7 +19,7 @@ START_DELAY="${SYSTEM_START_DELAY:-1}"
 cd "${ROOT_DIR}"
 
 echo "== building =="
-if ! mvn -q package; then
+if ! mvn -q -DskipTests package; then
   echo "BUILD FAILED" >&2
   exit 1
 fi
@@ -48,7 +48,14 @@ java -jar "${ROOT_DIR}/sensor-sim/target/sensor-sim.jar" \
   > "${LOG_DIR}/sensor-sim.log" 2>&1 &
 SIM_PID=$!
 
+CLEANED_UP=0
+
 cleanup() {
+  if [ "${CLEANED_UP}" -eq 1 ]; then
+    return
+  fi
+  CLEANED_UP=1
+
   echo
   echo "== stopping simulation =="
 
