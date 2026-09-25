@@ -43,6 +43,18 @@ class MainTest {
     }
 
     @Test
+    void receiverOneReportIntervalLateStaysHealthy() {
+        NetConfig cfg = NetConfig.load(new String[0]);
+        long now = System.currentTimeMillis();
+        // One report interval of cadence jitter is normal, not a miss worth flagging SUSPECT.
+        long lastSeen = now - cfg.receiverCheckIntervalMs();
+
+        ServiceState state = Main.evaluateReceiverState(cfg, "receiver-0", lastSeen, ServiceState.HEALTHY);
+
+        assertEquals(ServiceState.HEALTHY, state);
+    }
+
+    @Test
     void receiverBecomesSuspectBeforeTheFailureThreshold() {
         NetConfig cfg = NetConfig.load(new String[0]);
         long now = System.currentTimeMillis();
@@ -82,6 +94,25 @@ class MainTest {
         } finally {
             restoreProperty("receiver.checkIntervalMs", originalCheck);
             restoreProperty("monitor.missedCount", originalMissed);
+        }
+    }
+
+    @Test
+    void failedWindowIsHonouredEvenWhenTheJitterGraceWouldCoverIt() {
+        String original = System.getProperty("monitor.missedCount");
+        try {
+            System.setProperty("monitor.missedCount", "1"); // expire = 1 x receiver.checkIntervalMs
+            NetConfig cfg = NetConfig.load(new String[0]);
+            long now = System.currentTimeMillis();
+            // Silent past the expire window but within the jitter grace; must be FAILED, not HEALTHY.
+            long lastSeen = now - (cfg.monitorExpireMs() + cfg.receiverCheckIntervalMs() / 4);
+
+            ServiceState state =
+                    Main.evaluateReceiverState(cfg, "receiver-0", lastSeen, ServiceState.HEALTHY);
+
+            assertEquals(ServiceState.FAILED, state);
+        } finally {
+            restoreProperty("monitor.missedCount", original);
         }
     }
 

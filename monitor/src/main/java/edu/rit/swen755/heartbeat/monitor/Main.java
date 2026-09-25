@@ -6,10 +6,12 @@ import edu.rit.swen755.heartbeat.protocol.NetConfig;
 import edu.rit.swen755.heartbeat.protocol.ServiceState;
 import edu.rit.swen755.heartbeat.protocol.ServiceStatus;
 import edu.rit.swen755.heartbeat.protocol.StatusReport;
+import java.io.IOException;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -43,6 +45,9 @@ public final class Main {
         }
         if (receiverCheckIntervalMs <= 0) {
             throw new IllegalArgumentException("receiver.checkIntervalMs must be positive");
+        }
+        if (cfg.monitorMissedCount() < 1) {
+            throw new IllegalArgumentException("monitor.missedCount must be at least 1");
         }
         LOG.log(Level.INFO, "startup {0}", cfg.describe("monitor"));
 
@@ -93,7 +98,17 @@ public final class Main {
                     receiverState = evaluateReceiverState(cfg, receiverId, lastReceiverSeenMs, receiverState);
                 } catch (SocketTimeoutException timeout) {
                     receiverState = evaluateReceiverState(cfg, receiverId, lastReceiverSeenMs, receiverState);
-                } catch (IllegalArgumentException | IllegalStateException decodeFailure) {
+                } catch (SocketException closed) {
+                    // socket.close() from the shutdown hook unblocks receive() with this; a clean
+                    // shutdown, not an error. (SocketException must precede the IOException catch.)
+                    if (!running) {
+                        break;
+                    }
+                    LOG.log(Level.WARNING, "monitor socket error: {0}", closed.getMessage());
+                } catch (IOException | IllegalArgumentException | IllegalStateException decodeFailure) {
+                    // Codec.decode throws IOException for a malformed/truncated datagram (Jackson
+                    // wraps a record-validation error as IOException too); keep the runtime types
+                    // for any direct validation error. Logged and skipped, never fatal.
                     LOG.log(Level.WARNING, "invalid incoming datagram: {0}", decodeFailure.getMessage());
                 } catch (Exception unexpected) {
                     if (!running) {
@@ -117,13 +132,19 @@ public final class Main {
 
         long now = System.currentTimeMillis();
         long delayMs = Math.max(0L, now - lastReceiverSeenMs);
-        long missed = Math.floorDiv(delayMs, cfg.receiverCheckIntervalMs());
+        // The monitor polls at monitor.checkIntervalMs, which equals the receiver's report cadence by
+        // default, so a report landing just past a poll boundary looks one interval "late" though it
+        // is healthy. Tolerate one report interval plus half an interval of that jitter before
+        // flagging, so an on-cadence receiver does not flap HEALTHY<->SUSPECT every tick.
+        long healthyWithinMs = cfg.receiverCheckIntervalMs() + cfg.receiverCheckIntervalMs() / 2;
 
         ServiceState nextState;
-        if (missed <= 0L) {
-            nextState = ServiceState.HEALTHY;
-        } else if (delayMs >= cfg.monitorExpireMs()) {
+        if (delayMs >= cfg.monitorExpireMs()) {
+            // The configured detection window is always honored, even when the jitter grace above
+            // would otherwise cover it (small monitor.missedCount).
             nextState = ServiceState.FAILED;
+        } else if (delayMs <= healthyWithinMs) {
+            nextState = ServiceState.HEALTHY;
         } else {
             nextState = ServiceState.SUSPECT;
         }
