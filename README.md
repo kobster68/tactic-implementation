@@ -186,6 +186,15 @@ clock adjustments can affect decisions. The monitor's timeout checks can be dela
 invalid traffic, and report fields are not fully validated before refreshing liveness. UDP delivery
 is not guaranteed. These cases are not covered by the passing suite.
 
+### Java SE timing considerations
+
+This prototype uses standard Java SE, which is practical for the assignment but is not generally
+hard-real-time technology: garbage collection, JIT compilation, OS scheduling, and UDP timing can
+introduce latency and reduce execution-time predictability. 
+
+A production real-time version could use a real-time Java profile such as RTSJ,
+a deterministic process/thread scheduler, and bounded-memory practices.
+
 ## Configuration keys
 
 All keys live in `protocol/src/main/resources/heartbeat.properties`. Defaults are the demo
