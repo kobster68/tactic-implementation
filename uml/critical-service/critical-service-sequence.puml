@@ -1,0 +1,45 @@
+@startuml critical-service-sequence
+title Critical-service slice — sequence: lane assessment, heartbeats, and crash
+
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+hide footbox
+
+participant "sensor-sim\n(separate process)" as SIM
+box "critical-service process (this slice)" #F5F5F5
+  participant "Main\nsingle service thread" as CS
+  participant "Codec\n(shared protocol)" as CODEC
+  participant LaneDetector as LD
+end box
+participant "receiver\n(separate watchdog process)" as RX
+participant "monitor\n(separate process)" as MON
+
+== normal operation ==
+loop service running
+  opt heartbeat due
+    CS ->> RX : Heartbeat (UDP :5002)
+  end
+  opt sensor reading arrives before next heartbeat deadline
+    SIM ->> CS : SensorReading (UDP :5001)
+    CS -> CODEC : decode(bytes)
+    CODEC --> CS : valid reading
+    CS -> LD : assess(reading)
+    LD --> CS : LaneAssessment
+  end
+end
+
+== fault during a receive iteration ==
+SIM ->> CS : randomly corrupted reading
+CS -> CODEC : decode(bytes)
+CODEC --> CS : uncaught parse / validation exception
+destroy CS
+
+note over CS, RX : Service crashes; heartbeats stop.
+
+loop receiver.checkIntervalMs
+  RX -> RX : evaluate silence\nHEALTHY -> SUSPECT -> FAILED
+  RX ->> MON : StatusReport (UDP :5003)
+  MON -> MON : log service state transitions
+end
+
+@enduml
