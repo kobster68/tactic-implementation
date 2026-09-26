@@ -152,8 +152,9 @@ recommended when demonstrating processor-failure isolation.
 
 - `LaneDetectorTest` verifies centered and drifting classifications at and around both ±0.5-meter
   boundaries.
-- `MainTest` verifies runtime argument parsing and both simulated fault payload forms.
-- `CodecTest` and `SensorReading` validation tests verify malformed and out-of-range messages.
+- `MainTest` verifies the critical-service runtime argument parsing.
+- `CodecTest` verifies that truncated and out-of-range messages are rejected; `sensor-sim/MainTest`
+  verifies construction of both simulated fault payload forms.
 - Receiver unit and UDP integration tests verify that stopped heartbeats eventually produce the
   `HEALTHY → SUSPECT → FAILED` sequence.
 
