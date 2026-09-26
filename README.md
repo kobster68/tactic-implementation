@@ -3,6 +3,8 @@
 SWEN-755 Tactic Implementation, Group 1: fault detection with the **heartbeat availability
 tactic**, implemented as four Java processes communicating over UDP.
 
+**Repository:** https://github.com/kobster68/tactic-implementation
+
 This repository implements a **minimum heartbeat fault-detection prototype**: the shared message
 contract, JSON codec, configuration loader, Maven build, and all four process slices are implemented.
 A bounded **tracer** runs the processes on one machine and checks that the receiver detects service
