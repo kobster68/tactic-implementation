@@ -11,6 +11,7 @@ import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.Random;
 
@@ -19,7 +20,9 @@ import java.util.Random;
  * {@code sensor.periodMs}, and with probability {@code sensor.faultProbability} sends a fault
  * instead -- a truncated datagram (share {@code sensor.corruptShare}) or an out-of-range lane
  * offset. Either fault makes the critical service's uncaught {@code Codec.decode} throw.
- * Optional {@code --count <n>} stops after n sends (tracer/test runs); default runs forever.
+ * In active-redundancy mode each payload is fanned out to the primary and backup replica. Optional
+ * {@code --count <n>} stops after n sends (tracer/test runs), and {@code --lane-offset <metres>}
+ * makes valid readings deterministic for the recovery demonstration.
  */
 public final class Main {
 
@@ -41,6 +44,7 @@ public final class Main {
     public static void main(String[] args) throws Exception {
         NetConfig cfg = NetConfig.load(args);
         long count = parseCount(args);
+        Double laneOffset = parseLaneOffset(args);
         LOG.log(Level.INFO, "startup {0}", cfg.describe("sensor-sim"));
 
         long periodMs = cfg.sensorPeriodMs();
@@ -48,19 +52,42 @@ public final class Main {
             throw new IllegalArgumentException("sensor.periodMs must be positive");
         }
 
-        InetSocketAddress target = cfg.sensorTarget();
+        List<InetSocketAddress> targets = targets(
+                cfg.redundancyMode(), cfg.sensorTarget(), cfg.backupTarget());
         Random rng = new Random();
         try (DatagramSocket socket = new DatagramSocket()) {
             for (long seq = 0; count == 0 || seq < count; seq++) {
                 Kind kind = pick(rng, cfg.sensorFaultProbability(), cfg.sensorCorruptShare());
-                byte[] bytes = payload(kind, seq, rng);
-                socket.send(new DatagramPacket(bytes, bytes.length, target));
+                byte[] bytes = laneOffset != null && kind == Kind.VALID
+                        ? validPayload(seq, laneOffset)
+                        : payload(kind, seq, rng);
+                for (InetSocketAddress target : targets) {
+                    socket.send(new DatagramPacket(bytes, bytes.length, target));
+                }
                 LOG.log(kind == Kind.VALID ? Level.INFO : Level.WARNING,
-                        "sent seq={0} {1} -> {2}: {3}", seq, kind, target,
+                        "sent seq={0} {1} -> {2}: {3}", seq, kind, targets,
                         new String(bytes, StandardCharsets.UTF_8));
                 Thread.sleep(periodMs);
             }
         }
+    }
+
+    /**
+     * Selects the reading destinations. Passive mode sends only to the primary; after promotion,
+     * the deployment/demo starts a sensor phase whose primary target is the backup. Active mode
+     * sends identical datagrams to both replicas so they can update state in parallel.
+     */
+    static List<InetSocketAddress> targets(String mode, InetSocketAddress primary,
+            InetSocketAddress backup) {
+        if (mode == null) {
+            throw new IllegalArgumentException("redundancy.mode must be passive or active");
+        }
+        return switch (mode.trim().toLowerCase(Locale.ROOT)) {
+            case "passive" -> List.of(primary);
+            case "active" -> primary.equals(backup) ? List.of(primary) : List.of(primary, backup);
+            default -> throw new IllegalArgumentException(
+                    "redundancy.mode must be passive or active, was " + mode);
+        };
     }
 
     /** Chooses valid vs. fault, then which fault, from the two configured probabilities. */
@@ -93,6 +120,12 @@ public final class Main {
         };
     }
 
+    /** Builds a valid reading at an exact offset for a repeatable recovery demonstration. */
+    static byte[] validPayload(long seq, double laneOffsetMeters) throws IOException {
+        return Codec.encode(new SensorReading(SENSOR_ID, seq, System.currentTimeMillis(),
+                laneOffsetMeters));
+    }
+
     /** Returns 0 (run forever) unless {@code --count <positive n>} is given. */
     static long parseCount(String[] args) {
         for (int i = 0; i < args.length; i++) {
@@ -113,5 +146,32 @@ public final class Main {
             }
         }
         return 0;
+    }
+
+    /** Returns null for randomized valid readings, or the exact offset supplied by the caller. */
+    static Double parseLaneOffset(String[] args) {
+        for (int i = 0; i < args.length; i++) {
+            if ("--lane-offset".equals(args[i])) {
+                if (i + 1 >= args.length) {
+                    throw new IllegalArgumentException("--lane-offset needs a numeric value");
+                }
+                double offset;
+                try {
+                    offset = Double.parseDouble(args[i + 1]);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException(
+                            "--lane-offset must be numeric, was " + args[i + 1], e);
+                }
+                if (!Double.isFinite(offset)
+                        || offset < SensorReading.MIN_LANE_OFFSET_METERS
+                        || offset > SensorReading.MAX_LANE_OFFSET_METERS) {
+                    throw new IllegalArgumentException("--lane-offset must be within ["
+                            + SensorReading.MIN_LANE_OFFSET_METERS + ", "
+                            + SensorReading.MAX_LANE_OFFSET_METERS + "], was " + offset);
+                }
+                return offset;
+            }
+        }
+        return null;
     }
 }
