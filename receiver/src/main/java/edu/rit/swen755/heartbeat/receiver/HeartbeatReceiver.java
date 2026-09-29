@@ -1,6 +1,7 @@
 package edu.rit.swen755.heartbeat.receiver;
 
 import edu.rit.swen755.heartbeat.protocol.Heartbeat;
+import edu.rit.swen755.heartbeat.protocol.Promote;
 import edu.rit.swen755.heartbeat.protocol.ServiceState;
 import edu.rit.swen755.heartbeat.protocol.ServiceStatus;
 import java.util.ArrayList;
@@ -19,6 +20,10 @@ public final class HeartbeatReceiver {
     private final int missedCount;
     private final Clock clock;
     private final Map<String, Long> lastSeen = new ConcurrentHashMap<>();
+    // Failover trigger state, touched only by the checker: the last state each service was judged in
+    // (for the FAILED edge) and its current failover generation (0 until the first failure).
+    private final Map<String, ServiceState> failoverState = new ConcurrentHashMap<>();
+    private final Map<String, Long> failoverEpoch = new ConcurrentHashMap<>();
 
     public HeartbeatReceiver(long periodMs, int missedCount, Clock clock) {
         if (periodMs <= 0) {
@@ -95,6 +100,42 @@ public final class HeartbeatReceiver {
      */
     public long expireMs() {
         return (long) missedCount * periodMs;
+    }
+
+    /**
+     * The failover trigger for one checker tick, derived from the {@code statuses} that same tick
+     * judged. A service crossing into FAILED (its previous judged state was not FAILED) opens a new
+     * failover generation: its epoch increments once and a {@link Promote} is issued for the backup,
+     * flagged as the first send at that epoch. While the service stays FAILED the same epoch is
+     * re-issued each tick, so a dropped datagram is retried and the backup — which acts on an epoch
+     * once and ignores repeats — still takes over. A service that is not FAILED issues nothing and
+     * keeps its epoch, so a later failure opens a strictly higher generation.
+     *
+     * <p>Pure and socket-free: it only works out what to send. {@code sentAt} is stamped from the
+     * injected clock, which is the wall clock in production.
+     *
+     * @param statuses the states this tick judged (typically the result of {@link #check()})
+     * @return one signal per FAILED service, in the order the statuses were given; empty if none
+     */
+    public List<FailoverSignal> failoverSignals(List<ServiceStatus> statuses) {
+        long now = clock.millis();
+        List<FailoverSignal> signals = new ArrayList<>();
+        for (ServiceStatus status : statuses) {
+            String serviceId = status.serviceId();
+            ServiceState previous = failoverState.put(serviceId, status.state());
+            boolean enteringFailed =
+                    status.state() == ServiceState.FAILED && previous != ServiceState.FAILED;
+            if (enteringFailed) {
+                failoverEpoch.merge(serviceId, 1L, Long::sum);
+            }
+            if (status.state() == ServiceState.FAILED) {
+                long epoch = failoverEpoch.getOrDefault(serviceId, 0L);
+                // The FAILED edge is the only tick that opens a generation, so it is exactly the
+                // first (INFO) send; the ticks after it are the quiet (DEBUG) resends.
+                signals.add(new FailoverSignal(new Promote(serviceId, now, epoch), enteringFailed));
+            }
+        }
+        return signals;
     }
 
     // ---- the one aliveness formula, shared by missed(), state() and check() ------------------

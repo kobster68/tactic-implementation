@@ -9,7 +9,8 @@ import java.util.concurrent.CountDownLatch;
  * Receiver process: the watchdog over service heartbeats. It binds the listen port, updates a
  * per-service last-seen table as beats arrive, and every {@code receiver.checkIntervalMs} judges
  * each service HEALTHY / SUSPECT / FAILED and sends the monitor a {@code StatusReport} that doubles
- * as the receiver's own heartbeat. It runs until the process is stopped.
+ * as the receiver's own heartbeat. While a service is FAILED it also sends the backup a {@code
+ * Promote} to take over. It runs until the process is stopped.
  *
  * <p>The watchdog logic lives in {@link HeartbeatReceiver} (pure, clock-injected) and the sockets
  * and threads in {@link ReceiverNode}; this class only wires configuration to them.
@@ -37,7 +38,8 @@ public final class Main {
         HeartbeatReceiver receiver = new HeartbeatReceiver(
                 cfg.heartbeatPeriodMs(), cfg.receiverMissedCount(), Clock.SYSTEM);
         ReceiverNode node = new ReceiverNode(receiver, cfg.receiverListenPort(),
-                cfg.receiverReportTarget(), cfg.receiverCheckIntervalMs(), receiverId);
+                cfg.receiverReportTarget(), cfg.backupTarget(), cfg.receiverCheckIntervalMs(),
+                receiverId);
 
         CountDownLatch stopped = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
