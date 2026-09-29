@@ -2,6 +2,7 @@ package edu.rit.swen755.heartbeat.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.net.InetSocketAddress;
 import org.junit.jupiter.api.Test;
 
 /** NetConfig default load, -D override, and the endpoint-symmetry invariant. */
@@ -20,6 +21,14 @@ class NetConfigTest {
         assertEquals(0.5, cfg.sensorCorruptShare(), 1e-9);
         assertEquals("localhost", cfg.sensorTargetHost());
         assertEquals(5001, cfg.sensorTargetPort());
+    }
+
+    @Test
+    void loadsRecoveryDefaults() {
+        NetConfig cfg = NetConfig.load(new String[0]);
+        assertEquals("passive", cfg.redundancyMode());
+        assertEquals("primary", cfg.replicaRole());
+        assertEquals(new InetSocketAddress("localhost", 5011), cfg.backupTarget());
     }
 
     @Test

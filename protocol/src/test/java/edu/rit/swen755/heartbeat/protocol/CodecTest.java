@@ -39,6 +39,42 @@ class CodecTest {
     }
 
     @Test
+    void checkpointRoundTrips() throws IOException {
+        Message original = new Checkpoint("critical-service", 9, 1_700_000_000_000L, 2,
+                DriftDirection.LEFT, true);
+        Message decoded = Codec.decode(Codec.encode(original));
+        assertEquals(original, decoded);
+        assertInstanceOf(Checkpoint.class, decoded);
+    }
+
+    @Test
+    void promoteRoundTrips() throws IOException {
+        Message original = new Promote("critical-service", 1_700_000_000_000L, 4);
+        Message decoded = Codec.decode(Codec.encode(original));
+        assertEquals(original, decoded);
+        assertInstanceOf(Promote.class, decoded);
+    }
+
+    @Test
+    void checkpointRejectsBlankServiceId() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Checkpoint(" ", 0, 1_700_000_000_000L, 0, DriftDirection.NONE, false));
+    }
+
+    @Test
+    void checkpointRejectsNegativeDriftCount() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Checkpoint("critical-service", 0, 1_700_000_000_000L, -1,
+                        DriftDirection.NONE, false));
+    }
+
+    @Test
+    void promoteRejectsNegativeEpoch() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Promote("critical-service", 1_700_000_000_000L, -1));
+    }
+
+    @Test
     void decodeRejectsTruncatedDatagram() throws IOException {
         byte[] full = Codec.encode(new Heartbeat("critical-service", 1, 1_700_000_000_000L));
         byte[] truncated = Arrays.copyOf(full, full.length / 2);

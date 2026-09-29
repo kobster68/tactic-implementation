@@ -15,7 +15,9 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 @JsonSubTypes({
         @JsonSubTypes.Type(value = SensorReading.class, name = "SensorReading"),
         @JsonSubTypes.Type(value = Heartbeat.class, name = "Heartbeat"),
-        @JsonSubTypes.Type(value = StatusReport.class, name = "StatusReport")
+        @JsonSubTypes.Type(value = StatusReport.class, name = "StatusReport"),
+        @JsonSubTypes.Type(value = Checkpoint.class, name = "Checkpoint"),
+        @JsonSubTypes.Type(value = Promote.class, name = "Promote")
 })
-public sealed interface Message permits SensorReading, Heartbeat, StatusReport {
+public sealed interface Message permits SensorReading, Heartbeat, StatusReport, Checkpoint, Promote {
 }
