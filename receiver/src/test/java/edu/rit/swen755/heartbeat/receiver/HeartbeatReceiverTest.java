@@ -230,4 +230,39 @@ class HeartbeatReceiverTest {
         assertEquals(2L, second.promote().epoch(), "the next failover uses a higher epoch");
         assertTrue(second.firstAtEpoch());
     }
+
+    @Test
+    void resendsAreCappedPerEpochThenRefreshOnTheNextFailure() {
+        FakeClock clock = new FakeClock(1_000);
+        HeartbeatReceiver receiver = newReceiver(clock);
+        receiver.pitAPat(new Heartbeat(SVC, 0, clock.millis()));
+        clock.advance(MISSED_COUNT * PERIOD_MS); // cross into FAILED and stay there
+
+        // A permanently-dead service must not promote on every tick forever: the FAILED edge plus
+        // its loss-tolerant resends are a bounded handful (the cap in HeartbeatReceiver is 5), since
+        // the backup acts on an epoch once. Tick well past the cap and count what actually went out.
+        int firstGen = 0;
+        for (int tick = 0; tick < 20; tick++) {
+            firstGen += receiver.failoverSignals(receiver.check()).size();
+            clock.advance(PERIOD_MS); // still no beats: FAILED persists
+        }
+        assertEquals(5, firstGen, "resends stop once the per-epoch budget is spent");
+
+        receiver.pitAPat(new Heartbeat(SVC, 1, clock.millis())); // a beat -> HEALTHY again
+        assertTrue(receiver.failoverSignals(receiver.check()).isEmpty(), "recovery stops sending");
+
+        clock.advance(MISSED_COUNT * PERIOD_MS); // fail again: a fresh generation
+        int secondGen = 0;
+        long epoch = -1;
+        for (int tick = 0; tick < 20; tick++) {
+            List<FailoverSignal> signals = receiver.failoverSignals(receiver.check());
+            if (!signals.isEmpty()) {
+                epoch = signals.get(0).promote().epoch();
+            }
+            secondGen += signals.size();
+            clock.advance(PERIOD_MS);
+        }
+        assertEquals(5, secondGen, "the new generation gets its own full send budget");
+        assertEquals(2L, epoch, "and sends it at the strictly higher epoch");
+    }
 }

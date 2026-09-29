@@ -176,9 +176,9 @@ public final class ReceiverNode implements AutoCloseable {
             }
         }
 
-        // TODO(receiver owner): failover trigger. HeartbeatReceiver.failoverSignals() works out, per
-        // service and epoch, whether this tick should promote the backup; here we only put each
-        // Promote on the wire over the same socket the StatusReport used, to the backup target.
+        // Failover trigger: HeartbeatReceiver.failoverSignals() works out, per service and epoch,
+        // whether this tick should promote the backup; here we only put each Promote on the wire,
+        // over the same socket the StatusReport used.
         sendFailovers(receiver.failoverSignals(statuses));
     }
 
@@ -187,6 +187,8 @@ public final class ReceiverNode implements AutoCloseable {
             Promote promote = signal.promote();
             try {
                 byte[] bytes = Codec.encode(promote);
+                // backupTarget is the backup's control inbound; the primary's checkpoints arrive
+                // there too, so the backup decodes by message type (Promote vs Checkpoint).
                 socket.send(new DatagramPacket(bytes, bytes.length, backupTarget));
                 if (signal.firstAtEpoch()) {
                     // The failover itself is worth one INFO line; the loss-tolerant resends that
