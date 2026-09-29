@@ -194,6 +194,24 @@ public final class NetConfig {
         return getInt("monitor.missedCount");
     }
 
+    // ---- recovery / redundancy ---------------------------------------------------------------
+
+    public String redundancyMode() {
+        return getString("redundancy.mode");
+    }
+
+    public String replicaRole() {
+        return getString("replica.role");
+    }
+
+    public String serviceBackupHost() {
+        return getString("service.backup.host");
+    }
+
+    public int serviceBackupPort() {
+        return getInt("service.backup.port");
+    }
+
     // ---- socket address helpers, one per outbound target -------------------------------------
 
     /** Where the sensor simulator sends its readings (critical service inbound). */
@@ -209,6 +227,11 @@ public final class NetConfig {
     /** Where the receiver sends its status reports (monitor inbound). */
     public InetSocketAddress receiverReportTarget() {
         return new InetSocketAddress(receiverReportTargetHost(), receiverReportTargetPort());
+    }
+
+    /** Where the primary sends its checkpoints (warm-spare backup inbound). */
+    public InetSocketAddress backupTarget() {
+        return new InetSocketAddress(serviceBackupHost(), serviceBackupPort());
     }
 
     // ---- startup log line --------------------------------------------------------------------
