@@ -29,6 +29,7 @@ class NetConfigTest {
         assertEquals("passive", cfg.redundancyMode());
         assertEquals("primary", cfg.replicaRole());
         assertEquals(new InetSocketAddress("localhost", 5011), cfg.backupTarget());
+        assertEquals(3, cfg.serviceWarningThreshold());
     }
 
     @Test
