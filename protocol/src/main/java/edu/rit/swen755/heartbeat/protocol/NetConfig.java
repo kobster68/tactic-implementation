@@ -212,6 +212,11 @@ public final class NetConfig {
         return getInt("service.backup.port");
     }
 
+    /** Number of consecutive drift readings required to activate the lane warning. */
+    public int serviceWarningThreshold() {
+        return getInt("service.warning.threshold");
+    }
+
     // ---- socket address helpers, one per outbound target -------------------------------------
 
     /** Where the sensor simulator sends its readings (critical service inbound). */
