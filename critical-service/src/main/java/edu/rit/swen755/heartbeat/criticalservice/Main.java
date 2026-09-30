@@ -51,11 +51,16 @@ public final class Main {
                 cfg.serviceWarningThreshold());
         LaneDetector laneDetector = new LaneDetector();
 
-        // This socket closes on both normal completion and an uncaught input failure.
-        int listenPort = role == ReplicaRole.BACKUP ? cfg.serviceBackupPort() : cfg.serviceListenPort();
-        try (DatagramSocket socket = new DatagramSocket(listenPort)) {
+        // The data socket remains on the normal service port. A backup also opens a control socket
+        // for checkpoints and promotion messages so it can receive sensor data immediately after
+        // takeover without changing the receiver's backupTarget contract.
+        try (DatagramSocket socket = new DatagramSocket(cfg.serviceListenPort());
+                DatagramSocket controlSocket = role == ReplicaRole.BACKUP
+                        ? new DatagramSocket(cfg.serviceBackupPort()) : null) {
             byte[] buffer = new byte[2048];
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            byte[] controlBuffer = new byte[2048];
+            DatagramPacket controlPacket = new DatagramPacket(controlBuffer, controlBuffer.length);
             long heartbeatSeq = 0;
             long checkpointSeq = 0;
             // Send the first heartbeat immediately, without waiting for a sensor reading.
@@ -102,7 +107,27 @@ public final class Main {
                 // Round up: a zero socket timeout would block indefinitely.
                 long timeoutMs = remainingNanos / 1_000_000L
                         + (remainingNanos % 1_000_000L == 0 ? 0 : 1);
-                socket.setSoTimeout((int) Math.min(timeoutMs, Integer.MAX_VALUE));
+                if (controlSocket != null) {
+                    controlSocket.setSoTimeout(1);
+                    controlPacket.setLength(controlBuffer.length);
+                    try {
+                        controlSocket.receive(controlPacket);
+                        Message control = Codec.decode(Arrays.copyOf(controlPacket.getData(),
+                                controlPacket.getLength()));
+                        if (control instanceof Checkpoint checkpoint) {
+                            replica.applyCheckpoint(checkpoint);
+                        } else if (control instanceof Promote promote
+                                && replica.acceptPromotion(promote)) {
+                            LOG.log(Level.INFO, "promoted to PRIMARY at epoch {0}", promote.epoch());
+                        }
+                    } catch (SocketTimeoutException ignored) {
+                        // No control message this poll; continue with sensor input.
+                    }
+                }
+                // Poll a backup's sensor socket frequently enough to service control messages while
+                // passive; primary timing remains governed by the heartbeat deadline.
+                long receiveTimeoutMs = controlSocket == null ? timeoutMs : Math.min(timeoutMs, 25);
+                socket.setSoTimeout((int) Math.min(receiveTimeoutMs, Integer.MAX_VALUE));
                 // receive() changes the packet length; restore capacity for the next datagram.
                 packet.setLength(buffer.length);
                 try {
