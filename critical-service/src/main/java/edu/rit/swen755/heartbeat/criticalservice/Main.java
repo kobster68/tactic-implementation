@@ -45,6 +45,7 @@ public final class Main {
         // Monotonic deadlines avoid changes to the system clock affecting heartbeat scheduling.
         long heartbeatPeriodNanos = Math.multiplyExact(heartbeatPeriodMs, 1_000_000L);
         InetSocketAddress heartbeatTarget = cfg.serviceHeartbeatTarget();
+        InetSocketAddress checkpointTarget = cfg.backupTarget();
         ReplicaRole role = parseRole(cfg.replicaRole());
         ReplicaController replica = new ReplicaController("critical-service", role,
                 cfg.serviceWarningThreshold());
@@ -56,6 +57,7 @@ public final class Main {
             byte[] buffer = new byte[2048];
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
             long heartbeatSeq = 0;
+            long checkpointSeq = 0;
             // Send the first heartbeat immediately, without waiting for a sensor reading.
             long nextHeartbeatNanos = System.nanoTime();
             long stopAtNanos = nextHeartbeatNanos + runForNanos;
@@ -138,6 +140,20 @@ public final class Main {
                 if (warning) {
                     LOG.log(Level.WARNING, "lane-departure warning active after {0} consecutive drifts",
                             replica.laneState().consecutiveDriftCount());
+                }
+                if (replica.role() == ReplicaRole.PRIMARY) {
+                    Checkpoint checkpoint = replica.laneState().checkpoint(
+                            "critical-service", checkpointSeq++, System.currentTimeMillis());
+                    try {
+                        byte[] checkpointBytes = Codec.encode(checkpoint);
+                        socket.send(new DatagramPacket(checkpointBytes, checkpointBytes.length,
+                                checkpointTarget));
+                        LOG.log(Level.INFO, "sent checkpoint {0} -> {1}", checkpoint, checkpointTarget);
+                    } catch (IOException e) {
+                        // Checkpoint loss is tolerated; the next sensor operation sends a newer snapshot.
+                        LOG.log(Level.WARNING, "checkpoint send failed for seq=" + checkpoint.seq()
+                                + " -> " + checkpointTarget, e);
+                    }
                 }
             }
         }
