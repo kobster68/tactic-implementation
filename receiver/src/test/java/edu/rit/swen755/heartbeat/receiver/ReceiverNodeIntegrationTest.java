@@ -1,11 +1,14 @@
 package edu.rit.swen755.heartbeat.receiver;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import edu.rit.swen755.heartbeat.protocol.Codec;
 import edu.rit.swen755.heartbeat.protocol.Heartbeat;
 import edu.rit.swen755.heartbeat.protocol.Message;
+import edu.rit.swen755.heartbeat.protocol.Promote;
 import edu.rit.swen755.heartbeat.protocol.ServiceState;
 import edu.rit.swen755.heartbeat.protocol.ServiceStatus;
 import edu.rit.swen755.heartbeat.protocol.StatusReport;
@@ -36,14 +39,20 @@ class ReceiverNodeIntegrationTest {
         long checkMs = 50;
         int missedCount = 3;
 
-        try (DatagramSocket monitor = new DatagramSocket(new InetSocketAddress("localhost", 0))) {
+        try (DatagramSocket monitor = new DatagramSocket(new InetSocketAddress("localhost", 0));
+                DatagramSocket backup = new DatagramSocket(new InetSocketAddress("localhost", 0))) {
             monitor.setSoTimeout(500);
             InetSocketAddress reportTarget =
                     new InetSocketAddress("localhost", monitor.getLocalPort());
+            // Failover is not exercised here; the capture socket only gives the receiver a live
+            // backup target so any fire-and-forget Promote lands somewhere harmless.
+            InetSocketAddress backupTarget =
+                    new InetSocketAddress("localhost", backup.getLocalPort());
             HeartbeatReceiver receiver = new HeartbeatReceiver(periodMs, missedCount, Clock.SYSTEM);
 
             try (ReceiverNode node =
-                    new ReceiverNode(receiver, 0, reportTarget, checkMs, "receiver-test")) {
+                    new ReceiverNode(receiver, 0, reportTarget, backupTarget, checkMs,
+                            "receiver-test")) {
                 node.start();
                 InetSocketAddress listen = new InetSocketAddress("localhost", node.listenPort());
 
@@ -69,14 +78,20 @@ class ReceiverNodeIntegrationTest {
         long checkMs = 50;
         int missedCount = 3;
 
-        try (DatagramSocket monitor = new DatagramSocket(new InetSocketAddress("localhost", 0))) {
+        try (DatagramSocket monitor = new DatagramSocket(new InetSocketAddress("localhost", 0));
+                DatagramSocket backup = new DatagramSocket(new InetSocketAddress("localhost", 0))) {
             monitor.setSoTimeout(500);
             InetSocketAddress reportTarget =
                     new InetSocketAddress("localhost", monitor.getLocalPort());
+            // Failover is not exercised here; the capture socket only gives the receiver a live
+            // backup target so any fire-and-forget Promote lands somewhere harmless.
+            InetSocketAddress backupTarget =
+                    new InetSocketAddress("localhost", backup.getLocalPort());
             HeartbeatReceiver receiver = new HeartbeatReceiver(periodMs, missedCount, Clock.SYSTEM);
 
             try (ReceiverNode node =
-                    new ReceiverNode(receiver, 0, reportTarget, checkMs, "receiver-test")) {
+                    new ReceiverNode(receiver, 0, reportTarget, backupTarget, checkMs,
+                            "receiver-test")) {
                 node.start();
                 InetSocketAddress listen = new InetSocketAddress("localhost", node.listenPort());
 
@@ -103,14 +118,20 @@ class ReceiverNodeIntegrationTest {
         long checkMs = 500;
         int missedCount = 3;
 
-        try (DatagramSocket monitor = new DatagramSocket(new InetSocketAddress("localhost", 0))) {
+        try (DatagramSocket monitor = new DatagramSocket(new InetSocketAddress("localhost", 0));
+                DatagramSocket backup = new DatagramSocket(new InetSocketAddress("localhost", 0))) {
             monitor.setSoTimeout(1_000);
             InetSocketAddress reportTarget =
                     new InetSocketAddress("localhost", monitor.getLocalPort());
+            // Failover is not exercised here; the capture socket only gives the receiver a live
+            // backup target so any fire-and-forget Promote lands somewhere harmless.
+            InetSocketAddress backupTarget =
+                    new InetSocketAddress("localhost", backup.getLocalPort());
             HeartbeatReceiver receiver = new HeartbeatReceiver(periodMs, missedCount, Clock.SYSTEM);
 
             try (ReceiverNode node =
-                    new ReceiverNode(receiver, 0, reportTarget, checkMs, "receiver-test")) {
+                    new ReceiverNode(receiver, 0, reportTarget, backupTarget, checkMs,
+                            "receiver-test")) {
                 node.start();
                 InetSocketAddress listen = new InetSocketAddress("localhost", node.listenPort());
 
@@ -134,15 +155,99 @@ class ReceiverNodeIntegrationTest {
     void rejectsNonPositiveCheckInterval() {
         HeartbeatReceiver receiver = new HeartbeatReceiver(1_000, 3, Clock.SYSTEM);
         InetSocketAddress target = new InetSocketAddress("localhost", 5_003);
+        InetSocketAddress backup = new InetSocketAddress("localhost", 5_004);
         // Zero would spin the checker sending reports as fast as it can; a negative value makes
         // Thread.sleep throw and quietly kills the checker thread. Reject both before binding.
         assertThrows(IllegalArgumentException.class,
-                () -> new ReceiverNode(receiver, 0, target, 0, "receiver-test"));
+                () -> new ReceiverNode(receiver, 0, target, backup, 0, "receiver-test"));
         assertThrows(IllegalArgumentException.class,
-                () -> new ReceiverNode(receiver, 0, target, -1, "receiver-test"));
+                () -> new ReceiverNode(receiver, 0, target, backup, -1, "receiver-test"));
+    }
+
+    @Test
+    void promotesTheBackupWhileFailedThenBumpsEpochOnTheNextFailure() throws Exception {
+        long periodMs = 100;
+        long checkMs = 50;
+        int missedCount = 3;
+
+        try (DatagramSocket monitor = new DatagramSocket(new InetSocketAddress("localhost", 0));
+                DatagramSocket backup = new DatagramSocket(new InetSocketAddress("localhost", 0))) {
+            monitor.setSoTimeout(500);
+            backup.setSoTimeout(500); // stand-in for the backup: capture the Promote stream
+            InetSocketAddress reportTarget =
+                    new InetSocketAddress("localhost", monitor.getLocalPort());
+            InetSocketAddress backupTarget =
+                    new InetSocketAddress("localhost", backup.getLocalPort());
+            HeartbeatReceiver receiver = new HeartbeatReceiver(periodMs, missedCount, Clock.SYSTEM);
+
+            try (ReceiverNode node = new ReceiverNode(
+                    receiver, 0, reportTarget, backupTarget, checkMs, "receiver-test")) {
+                node.start();
+                InetSocketAddress listen = new InetSocketAddress("localhost", node.listenPort());
+
+                // First failure: beat for a while, then stop and let the service go FAILED.
+                beatFor(listen, SVC, periodMs, 8);
+                long deadline = System.currentTimeMillis() + (missedCount + 6) * periodMs + 1_000;
+                Promote first = awaitPromoteAbove(backup, SVC, -1, deadline);
+                assertNotNull(first, "a Promote should arrive once the service is FAILED");
+                long firstEpoch = first.epoch();
+
+                // The epoch is stable across the loss-tolerant resends of the same failure.
+                Promote resend = awaitPromoteAbove(
+                        backup, SVC, -1, System.currentTimeMillis() + 8 * checkMs + 1_000);
+                assertNotNull(resend, "the failure should be re-promoted while it persists");
+                assertEquals(firstEpoch, resend.epoch(), "resends keep the same epoch");
+
+                // Recovery, then a second failure: the next Promote carries a higher epoch.
+                beatFor(listen, SVC, periodMs, 8);
+                long deadline2 =
+                        System.currentTimeMillis() + (missedCount + 8) * periodMs + 2_000;
+                Promote second = awaitPromoteAbove(backup, SVC, firstEpoch, deadline2);
+                assertNotNull(second, "the next failure should promote again");
+                assertTrue(second.epoch() > firstEpoch,
+                        () -> "expected a higher epoch than " + firstEpoch + ", saw " + second.epoch());
+            }
+        }
     }
 
     // ---- helpers ---------------------------------------------------------------------------
+
+    /** Beats {@code count} times, half a period apart, from a throwaway service socket. */
+    private static void beatFor(InetSocketAddress listen, String id, long periodMs, int count)
+            throws IOException, InterruptedException {
+        try (DatagramSocket service = new DatagramSocket()) {
+            for (int seq = 0; seq < count; seq++) {
+                sendHeartbeat(service, listen, id, seq);
+                Thread.sleep(periodMs / 2);
+            }
+        }
+    }
+
+    /**
+     * Reads the backup capture socket until a {@link Promote} for {@code serviceId} whose epoch is
+     * strictly greater than {@code minEpochExclusive} arrives, or the deadline passes (then null).
+     * Pass {@code -1} to accept any epoch.
+     */
+    private static Promote awaitPromoteAbove(
+            DatagramSocket backup, String serviceId, long minEpochExclusive, long deadlineMs)
+            throws IOException {
+        byte[] buffer = new byte[4096];
+        while (System.currentTimeMillis() < deadlineMs) {
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            try {
+                backup.receive(packet);
+            } catch (SocketTimeoutException timeout) {
+                continue;
+            }
+            Message message = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+            if (message instanceof Promote promote
+                    && promote.serviceId().equals(serviceId)
+                    && promote.epoch() > minEpochExclusive) {
+                return promote;
+            }
+        }
+        return null;
+    }
 
     private static void sendHeartbeat(DatagramSocket from, InetSocketAddress to, String id, int seq)
             throws IOException {

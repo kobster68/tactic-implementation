@@ -3,6 +3,7 @@ package edu.rit.swen755.heartbeat.receiver;
 import edu.rit.swen755.heartbeat.protocol.Codec;
 import edu.rit.swen755.heartbeat.protocol.Heartbeat;
 import edu.rit.swen755.heartbeat.protocol.Message;
+import edu.rit.swen755.heartbeat.protocol.Promote;
 import edu.rit.swen755.heartbeat.protocol.ServiceState;
 import edu.rit.swen755.heartbeat.protocol.ServiceStatus;
 import edu.rit.swen755.heartbeat.protocol.StatusReport;
@@ -40,6 +41,7 @@ public final class ReceiverNode implements AutoCloseable {
     private final HeartbeatReceiver receiver;
     private final DatagramSocket socket;
     private final InetSocketAddress reportTarget;
+    private final InetSocketAddress backupTarget;
     private final long checkIntervalMs;
     private final String receiverId;
 
@@ -51,10 +53,12 @@ public final class ReceiverNode implements AutoCloseable {
 
     /**
      * Binds the listen socket immediately so {@link #listenPort()} is available before {@link
-     * #start()}; pass {@code listenPort} 0 for an ephemeral port.
+     * #start()}; pass {@code listenPort} 0 for an ephemeral port. {@code backupTarget} is where a
+     * {@link Promote} goes when a service fails over (typically {@code NetConfig.backupTarget()}).
      */
     public ReceiverNode(HeartbeatReceiver receiver, int listenPort, InetSocketAddress reportTarget,
-            long checkIntervalMs, String receiverId) throws SocketException {
+            InetSocketAddress backupTarget, long checkIntervalMs, String receiverId)
+            throws SocketException {
         if (checkIntervalMs <= 0) {
             // Zero spins the checker; negative makes Thread.sleep throw and kills it. Fail before
             // binding the socket so an invalid value never leaves a port open.
@@ -62,6 +66,7 @@ public final class ReceiverNode implements AutoCloseable {
         }
         this.receiver = receiver;
         this.reportTarget = reportTarget;
+        this.backupTarget = backupTarget;
         this.checkIntervalMs = checkIntervalMs;
         this.receiverId = receiverId;
         this.socket = new DatagramSocket(listenPort);
@@ -168,6 +173,39 @@ public final class ReceiverNode implements AutoCloseable {
             } else {
                 // A send interrupted by close() is an expected part of shutdown, not an error.
                 LOG.log(Level.DEBUG, "status report send interrupted by shutdown", e);
+            }
+        }
+
+        // Failover trigger: HeartbeatReceiver.failoverSignals() works out, per service and epoch,
+        // whether this tick should promote the backup; here we only put each Promote on the wire,
+        // over the same socket the StatusReport used.
+        sendFailovers(receiver.failoverSignals(statuses));
+    }
+
+    private void sendFailovers(List<FailoverSignal> signals) {
+        for (FailoverSignal signal : signals) {
+            Promote promote = signal.promote();
+            try {
+                byte[] bytes = Codec.encode(promote);
+                // backupTarget is the backup's control inbound; the primary's checkpoints arrive
+                // there too, so the backup decodes by message type (Promote vs Checkpoint).
+                socket.send(new DatagramPacket(bytes, bytes.length, backupTarget));
+                if (signal.firstAtEpoch()) {
+                    // The failover itself is worth one INFO line; the loss-tolerant resends that
+                    // follow while the service stays FAILED are DEBUG so a long outage cannot flood.
+                    LOG.log(Level.INFO, "{0} FAILED -> promoting backup (failover epoch {1})",
+                            promote.serviceId(), promote.epoch());
+                } else {
+                    LOG.log(Level.DEBUG, "{0} re-sending promote (failover epoch {1})",
+                            promote.serviceId(), promote.epoch());
+                }
+            } catch (IOException e) {
+                // Logged and swallowed so the checker survives a bad send, same as the report path.
+                if (running) {
+                    LOG.log(Level.WARNING, "failed to send promote", e);
+                } else {
+                    LOG.log(Level.DEBUG, "promote send interrupted by shutdown", e);
+                }
             }
         }
     }

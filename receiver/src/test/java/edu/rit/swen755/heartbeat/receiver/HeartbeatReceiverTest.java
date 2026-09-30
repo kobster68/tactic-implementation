@@ -6,8 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import edu.rit.swen755.heartbeat.protocol.Heartbeat;
+import edu.rit.swen755.heartbeat.protocol.Promote;
 import edu.rit.swen755.heartbeat.protocol.ServiceState;
 import edu.rit.swen755.heartbeat.protocol.ServiceStatus;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -161,5 +163,106 @@ class HeartbeatReceiverTest {
         assertThrows(IllegalArgumentException.class, () -> receiver.state("never-seen"));
         assertThrows(IllegalArgumentException.class, () -> receiver.checkAlive("never-seen"));
         assertThrows(IllegalArgumentException.class, () -> receiver.missed("never-seen"));
+    }
+
+    // ---- failover trigger: epoch per FAILED edge, loss-tolerant resends ----------------------
+
+    @Test
+    void aHealthyServicePromptsNoFailover() {
+        FakeClock clock = new FakeClock(1_000);
+        HeartbeatReceiver receiver = newReceiver(clock);
+        receiver.pitAPat(new Heartbeat(SVC, 0, clock.millis()));
+
+        // HEALTHY (and, on the next tick below, SUSPECT) must not trigger a promotion.
+        assertTrue(receiver.failoverSignals(receiver.check()).isEmpty());
+        clock.advance(PERIOD_MS); // one missed period -> SUSPECT, still not FAILED
+        assertTrue(receiver.failoverSignals(receiver.check()).isEmpty());
+    }
+
+    @Test
+    void enteringFailedOpensEpochOneAsAFirstSend() {
+        FakeClock clock = new FakeClock(1_000);
+        HeartbeatReceiver receiver = newReceiver(clock);
+        receiver.pitAPat(new Heartbeat(SVC, 0, clock.millis()));
+
+        clock.advance(MISSED_COUNT * PERIOD_MS); // crosses into FAILED
+        List<FailoverSignal> signals = receiver.failoverSignals(receiver.check());
+
+        assertEquals(1, signals.size());
+        Promote promote = signals.get(0).promote();
+        assertEquals(SVC, promote.serviceId());
+        assertEquals(1L, promote.epoch(), "the first failover is epoch 1");
+        assertEquals(clock.millis(), promote.sentAt(), "sentAt is stamped from the injected clock");
+        assertTrue(signals.get(0).firstAtEpoch(), "the FAILED edge is the first send at its epoch");
+    }
+
+    @Test
+    void stayingFailedResendsTheSameEpochQuietly() {
+        FakeClock clock = new FakeClock(1_000);
+        HeartbeatReceiver receiver = newReceiver(clock);
+        receiver.pitAPat(new Heartbeat(SVC, 0, clock.millis()));
+        clock.advance(MISSED_COUNT * PERIOD_MS);
+
+        FailoverSignal first = receiver.failoverSignals(receiver.check()).get(0);
+        clock.advance(PERIOD_MS); // still no beats: FAILED persists into the next tick
+        FailoverSignal resend = receiver.failoverSignals(receiver.check()).get(0);
+
+        assertEquals(1L, first.promote().epoch());
+        assertTrue(first.firstAtEpoch());
+        assertEquals(1L, resend.promote().epoch(), "a persisting failure keeps the same epoch");
+        assertFalse(resend.firstAtEpoch(), "a resend is not the first send at its epoch");
+    }
+
+    @Test
+    void recoveringThenFailingAgainOpensAHigherEpoch() {
+        FakeClock clock = new FakeClock(1_000);
+        HeartbeatReceiver receiver = newReceiver(clock);
+        receiver.pitAPat(new Heartbeat(SVC, 0, clock.millis()));
+
+        clock.advance(MISSED_COUNT * PERIOD_MS); // first failure
+        assertEquals(1L, receiver.failoverSignals(receiver.check()).get(0).promote().epoch());
+
+        receiver.pitAPat(new Heartbeat(SVC, 1, clock.millis())); // a fresh beat -> HEALTHY again
+        assertTrue(receiver.failoverSignals(receiver.check()).isEmpty(), "recovery stops sending");
+
+        clock.advance(MISSED_COUNT * PERIOD_MS); // second failure
+        FailoverSignal second = receiver.failoverSignals(receiver.check()).get(0);
+        assertEquals(2L, second.promote().epoch(), "the next failover uses a higher epoch");
+        assertTrue(second.firstAtEpoch());
+    }
+
+    @Test
+    void resendsAreCappedPerEpochThenRefreshOnTheNextFailure() {
+        FakeClock clock = new FakeClock(1_000);
+        HeartbeatReceiver receiver = newReceiver(clock);
+        receiver.pitAPat(new Heartbeat(SVC, 0, clock.millis()));
+        clock.advance(MISSED_COUNT * PERIOD_MS); // cross into FAILED and stay there
+
+        // A permanently-dead service must not promote on every tick forever: the FAILED edge plus
+        // its loss-tolerant resends are a bounded handful (the cap in HeartbeatReceiver is 5), since
+        // the backup acts on an epoch once. Tick well past the cap and count what actually went out.
+        int firstGen = 0;
+        for (int tick = 0; tick < 20; tick++) {
+            firstGen += receiver.failoverSignals(receiver.check()).size();
+            clock.advance(PERIOD_MS); // still no beats: FAILED persists
+        }
+        assertEquals(5, firstGen, "resends stop once the per-epoch budget is spent");
+
+        receiver.pitAPat(new Heartbeat(SVC, 1, clock.millis())); // a beat -> HEALTHY again
+        assertTrue(receiver.failoverSignals(receiver.check()).isEmpty(), "recovery stops sending");
+
+        clock.advance(MISSED_COUNT * PERIOD_MS); // fail again: a fresh generation
+        int secondGen = 0;
+        long epoch = -1;
+        for (int tick = 0; tick < 20; tick++) {
+            List<FailoverSignal> signals = receiver.failoverSignals(receiver.check());
+            if (!signals.isEmpty()) {
+                epoch = signals.get(0).promote().epoch();
+            }
+            secondGen += signals.size();
+            clock.advance(PERIOD_MS);
+        }
+        assertEquals(5, secondGen, "the new generation gets its own full send budget");
+        assertEquals(2L, epoch, "and sends it at the strictly higher epoch");
     }
 }

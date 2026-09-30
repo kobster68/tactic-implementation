@@ -9,9 +9,10 @@ import java.util.concurrent.CountDownLatch;
  * Receiver process: the watchdog over service heartbeats. It binds the listen port, updates a
  * per-service last-seen table as beats arrive, and every {@code receiver.checkIntervalMs} judges
  * each service HEALTHY / SUSPECT / FAILED and sends the monitor a {@code StatusReport} that doubles
- * as the receiver's own heartbeat. It runs until the process is stopped.
+ * as the receiver's own heartbeat. While a service is FAILED it also sends the backup a {@code
+ * Promote} to take over. It runs until the process is stopped.
  *
- * <p>The watchdog logic lives in {@link HeartbeatReceiver} (pure, clock-injected) and the sockets
+ * <p>The watchdog logic lives in {@link HeartbeatReceiver} (socket- and thread-free, clock-injected) and the sockets
  * and threads in {@link ReceiverNode}; this class only wires configuration to them.
  */
 public final class Main {
@@ -37,7 +38,8 @@ public final class Main {
         HeartbeatReceiver receiver = new HeartbeatReceiver(
                 cfg.heartbeatPeriodMs(), cfg.receiverMissedCount(), Clock.SYSTEM);
         ReceiverNode node = new ReceiverNode(receiver, cfg.receiverListenPort(),
-                cfg.receiverReportTarget(), cfg.receiverCheckIntervalMs(), receiverId);
+                cfg.receiverReportTarget(), cfg.backupTarget(), cfg.receiverCheckIntervalMs(),
+                receiverId);
 
         CountDownLatch stopped = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -46,9 +48,11 @@ public final class Main {
         }, "receiver-shutdown"));
 
         node.start();
-        // Startup line above (cfg.describe) already logs the timings; this only adds the id and the
-        // actually-bound port. The port is passed as a String so MessageFormat does not group it.
-        LOG.log(Level.INFO, "{0} watching udp/{1}", receiverId, Integer.toString(node.listenPort()));
+        // Startup line above (cfg.describe) already logs the timings; this adds the id, the actually
+        // bound port, and the backup we promote to on failover, so a wrong backup endpoint is
+        // visible at startup. The port is passed as a String so MessageFormat does not group it.
+        LOG.log(Level.INFO, "{0} watching udp/{1}; promoting backup at {2} on failover",
+                receiverId, Integer.toString(node.listenPort()), cfg.backupTarget());
 
         stopped.await(); // run until Ctrl-C / SIGTERM triggers the shutdown hook
     }
