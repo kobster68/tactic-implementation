@@ -28,9 +28,14 @@ public final class LaneDepartureState {
             driftDirection = DriftDirection.NONE;
             warningActive = false;
         } else {
-            consecutiveDriftCount++;
-            driftDirection = assessment == LaneAssessment.DRIFTING_LEFT
+            DriftDirection nextDirection = assessment == LaneAssessment.DRIFTING_LEFT
                     ? DriftDirection.LEFT : DriftDirection.RIGHT;
+            if (driftDirection != nextDirection) {
+                consecutiveDriftCount = 1;
+            } else {
+                consecutiveDriftCount++;
+            }
+            driftDirection = nextDirection;
             warningActive = consecutiveDriftCount >= warningThreshold;
         }
         return warningActive;

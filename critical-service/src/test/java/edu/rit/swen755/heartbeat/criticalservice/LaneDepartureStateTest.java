@@ -36,6 +36,17 @@ class LaneDepartureStateTest {
     }
 
     @Test
+    void changingDriftDirectionStartsANewStreak() {
+        LaneDepartureState state = new LaneDepartureState(3);
+        state.apply(LaneAssessment.DRIFTING_LEFT);
+        state.apply(LaneAssessment.DRIFTING_LEFT);
+
+        assertFalse(state.apply(LaneAssessment.DRIFTING_RIGHT));
+        assertEquals(1, state.consecutiveDriftCount());
+        assertEquals(DriftDirection.RIGHT, state.driftDirection());
+    }
+
+    @Test
     void checkpointRestoresAllRecoverableState() {
         LaneDepartureState primary = new LaneDepartureState(3);
         primary.apply(LaneAssessment.DRIFTING_RIGHT);
