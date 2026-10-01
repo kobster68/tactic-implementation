@@ -26,6 +26,7 @@ class ReplicaControllerTest {
     void duplicateAndStalePromotionsAreIgnored() {
         ReplicaController replica = new ReplicaController("critical-service", ReplicaRole.BACKUP, 3);
 
+        assertFalse(replica.acceptPromotion(new Promote("critical-service", 9, 0)));
         assertTrue(replica.acceptPromotion(new Promote("critical-service", 10, 4)));
         assertFalse(replica.acceptPromotion(new Promote("critical-service", 11, 4)));
         assertFalse(replica.acceptPromotion(new Promote("critical-service", 12, 3)));

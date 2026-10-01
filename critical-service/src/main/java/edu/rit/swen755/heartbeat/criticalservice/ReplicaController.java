@@ -11,7 +11,8 @@ public final class ReplicaController {
     private final LaneDepartureState laneState;
     private ReplicaRole role;
     private long lastCheckpointSeq = -1;
-    private long lastHandledEpoch = -1;
+    // Epoch 0 is reserved as the pre-failover state; the receiver's first real promotion is 1.
+    private long lastHandledEpoch = 0;
 
     public ReplicaController(String serviceId, ReplicaRole role, int warningThreshold) {
         if (serviceId == null || serviceId.isBlank()) {
