@@ -114,8 +114,19 @@ public final class Main {
                     continue; // Recheck the heartbeat deadline.
                 }
 
-                // Parse and validation failures remain uncaught and stop the service and its beats.
-                Message reading = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+                Message reading;
+                try {
+                    reading = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+                } catch (IOException | RuntimeException malformed) {
+                    if (role == ReplicaRole.BACKUP) {
+                        LOG.log(Level.WARNING, "skipping malformed backup datagram ({0} bytes): {1}",
+                                packet.getLength(), malformed.toString());
+                        continue;
+                    }
+                    // The primary intentionally preserves the existing fault behavior: malformed
+                    // sensor input escapes the service loop and stops its heartbeat.
+                    throw malformed;
+                }
                 if (reading instanceof Checkpoint checkpoint) {
                     replica.applyCheckpoint(checkpoint);
                     continue;
