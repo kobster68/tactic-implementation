@@ -1,9 +1,11 @@
 package edu.rit.swen755.heartbeat.criticalservice;
 
 import edu.rit.swen755.heartbeat.protocol.Codec;
+import edu.rit.swen755.heartbeat.protocol.Checkpoint;
 import edu.rit.swen755.heartbeat.protocol.Heartbeat;
 import edu.rit.swen755.heartbeat.protocol.Message;
 import edu.rit.swen755.heartbeat.protocol.NetConfig;
+import edu.rit.swen755.heartbeat.protocol.Promote;
 import edu.rit.swen755.heartbeat.protocol.SensorReading;
 import java.io.IOException;
 import java.lang.System.Logger;
@@ -43,13 +45,22 @@ public final class Main {
         // Monotonic deadlines avoid changes to the system clock affecting heartbeat scheduling.
         long heartbeatPeriodNanos = Math.multiplyExact(heartbeatPeriodMs, 1_000_000L);
         InetSocketAddress heartbeatTarget = cfg.serviceHeartbeatTarget();
+        InetSocketAddress checkpointTarget = cfg.backupTarget();
+        ReplicaRole role = parseRole(cfg.replicaRole());
+        ReplicaController replica = new ReplicaController("critical-service", role,
+                cfg.serviceWarningThreshold());
         LaneDetector laneDetector = new LaneDetector();
 
-        // This socket closes on both normal completion and an uncaught input failure.
-        try (DatagramSocket socket = new DatagramSocket(cfg.serviceListenPort())) {
+        // Each replica uses one inbound socket. The primary uses the normal service port; the
+        // backup uses the shared checkpoint/promotion port. Messages are demultiplexed by type
+        // below, so the backup can receive checkpoints, promotions, and sensor readings safely.
+        int listenPort = role == ReplicaRole.BACKUP
+                ? cfg.serviceBackupPort() : cfg.serviceListenPort();
+        try (DatagramSocket socket = new DatagramSocket(listenPort)) {
             byte[] buffer = new byte[2048];
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
             long heartbeatSeq = 0;
+            long checkpointSeq = 0;
             // Send the first heartbeat immediately, without waiting for a sensor reading.
             long nextHeartbeatNanos = System.nanoTime();
             long stopAtNanos = nextHeartbeatNanos + runForNanos;
@@ -62,7 +73,10 @@ public final class Main {
                     LOG.log(Level.INFO, "demo runtime elapsed; stopping normally");
                     break;
                 }
-                if (now - nextHeartbeatNanos >= 0) {
+                if (!replica.shouldSendHeartbeat() && now - nextHeartbeatNanos >= 0) {
+                    nextHeartbeatNanos = now + heartbeatPeriodNanos;
+                }
+                if (replica.shouldSendHeartbeat() && now - nextHeartbeatNanos >= 0) {
                     // Sequence numbers restart with the process; sentAt is a wall-clock log timestamp.
                     Heartbeat beat = new Heartbeat("critical-service", heartbeatSeq++,
                             System.currentTimeMillis());
@@ -100,16 +114,70 @@ public final class Main {
                     continue; // Recheck the heartbeat deadline.
                 }
 
-                // Parse and validation failures remain uncaught and stop the service and its beats.
-                Message reading = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+                Message reading;
+                try {
+                    reading = Codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+                } catch (IOException | RuntimeException malformed) {
+                    if (role == ReplicaRole.BACKUP) {
+                        LOG.log(Level.WARNING, "skipping malformed backup datagram ({0} bytes): {1}",
+                                packet.getLength(), malformed.toString());
+                        continue;
+                    }
+                    // The primary intentionally preserves the existing fault behavior: malformed
+                    // sensor input escapes the service loop and stops its heartbeat.
+                    throw malformed;
+                }
+                if (reading instanceof Checkpoint checkpoint) {
+                    replica.applyCheckpoint(checkpoint);
+                    continue;
+                }
+                if (reading instanceof Promote promote) {
+                    if (replica.acceptPromotion(promote)) {
+                        LOG.log(Level.INFO, "promoted to PRIMARY at epoch {0}", promote.epoch());
+                    }
+                    continue;
+                }
                 if (!(reading instanceof SensorReading sensorReading)) {
+                    if (replica.role() == ReplicaRole.BACKUP) {
+                        continue;
+                    }
                     throw new IllegalArgumentException("Expected a SensorReading message");
+                }
+                if (!replica.shouldProcessSensor()) {
+                    continue;
                 }
                 // Perform the vehicle-function stub; health monitoring belongs to the receiver.
                 LaneAssessment assessment = laneDetector.assess(sensorReading);
+                boolean warning = replica.laneState().apply(assessment);
                 LOG.log(Level.INFO, "lane offset={0} m, assessment={1}",
                         sensorReading.laneOffsetMeters(), assessment);
+                if (warning) {
+                    LOG.log(Level.WARNING, "lane-departure warning active after {0} consecutive drifts",
+                            replica.laneState().consecutiveDriftCount());
+                }
+                if (replica.role() == ReplicaRole.PRIMARY) {
+                    Checkpoint checkpoint = replica.laneState().checkpoint(
+                            "critical-service", checkpointSeq++, System.currentTimeMillis());
+                    try {
+                        byte[] checkpointBytes = Codec.encode(checkpoint);
+                        socket.send(new DatagramPacket(checkpointBytes, checkpointBytes.length,
+                                checkpointTarget));
+                        LOG.log(Level.INFO, "sent checkpoint {0} -> {1}", checkpoint, checkpointTarget);
+                    } catch (IOException e) {
+                        // Checkpoint loss is tolerated; the next sensor operation sends a newer snapshot.
+                        LOG.log(Level.WARNING, "checkpoint send failed for seq=" + checkpoint.seq()
+                                + " -> " + checkpointTarget, e);
+                    }
+                }
             }
+        }
+    }
+
+    static ReplicaRole parseRole(String value) {
+        try {
+            return ReplicaRole.valueOf(value.trim().toUpperCase(java.util.Locale.ROOT));
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("replica.role must be PRIMARY or BACKUP: " + value, e);
         }
     }
 

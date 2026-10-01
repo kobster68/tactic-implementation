@@ -13,6 +13,9 @@ public final class LaneDetector {
      * Offsets exactly at either threshold are considered centered.
      */
     public LaneAssessment assess(SensorReading reading) {
+        if (reading == null) {
+            throw new NullPointerException("reading");
+        }
         double offset = reading.laneOffsetMeters();
         if (offset < -DRIFT_THRESHOLD_METERS) {
             return LaneAssessment.DRIFTING_LEFT;
