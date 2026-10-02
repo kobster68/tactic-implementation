@@ -1,6 +1,7 @@
 package edu.rit.swen755.heartbeat.monitor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import edu.rit.swen755.heartbeat.protocol.NetConfig;
 import edu.rit.swen755.heartbeat.protocol.ServiceState;
@@ -74,6 +75,22 @@ class MainTest {
         ServiceState state = Main.evaluateReceiverState(cfg, "receiver-0", lastSeen, ServiceState.SUSPECT);
 
         assertEquals(ServiceState.FAILED, state);
+    }
+
+    @Test
+    void recoveredServiceLogsFailedPromoteHealthyCycle() {
+        assertEquals(
+                "SERVICE critical-service RECOVERY FAILED -> PROMOTE (inferred) -> HEALTHY",
+                Main.recoveryCycleMessage(
+                        "critical-service", ServiceState.FAILED, ServiceState.HEALTHY));
+    }
+
+    @Test
+    void recoveryCycleIsNotLoggedWithoutFailedToHealthyTransition() {
+        assertNull(Main.recoveryCycleMessage(
+                "critical-service", ServiceState.SUSPECT, ServiceState.HEALTHY));
+        assertNull(Main.recoveryCycleMessage(
+                "critical-service", ServiceState.FAILED, ServiceState.SUSPECT));
     }
 
     @Test
