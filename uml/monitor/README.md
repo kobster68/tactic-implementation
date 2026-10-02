@@ -29,6 +29,11 @@ transitions visible while ensuring that a lost receiver report eventually produc
 The protocol types (`StatusReport`, `ServiceStatus`, `ServiceState`, `Codec`, and `NetConfig`) are the
 shared contract. The monitor consumes them and does not alter their behavior.
 
+When a monitored service moves from `FAILED` back to `HEALTHY`, the monitor logs the observed
+recovery as `FAILED -> PROMOTE (inferred) -> HEALTHY`. The receiver sends `Promote` directly to the
+backup, so the monitor does not observe that control message; its promotion entry is explicitly an
+inference from the service's recovery, not proof that a promotion datagram was delivered.
+
 ## Class diagram
 
 The class diagram describes the monitor entry point and the protocol records it consumes:
@@ -36,6 +41,9 @@ The class diagram describes the monitor entry point and the protocol records it 
 - **`Main`** loads and validates configuration, binds the monitor UDP port, and processes incoming
   packets. The per-service state map, receiver ID, last-report timestamp, and receiver state are
   local to `main()`.
+- **`recoveryCycleMessage()`** formats the recovery-cycle log only for an observed `FAILED` to
+  `HEALTHY` transition. `PROMOTE` is marked inferred because `Promote` is sent directly to the backup
+  and is not part of `StatusReport`.
 - **`evaluateReceiverState()`** classifies receiver silence. An unseen receiver remains in its
   current state. Once a receiver has reported, the method uses elapsed wall-clock time and the
   shared configuration thresholds to derive HEALTHY, SUSPECT, or FAILED and logs state changes.
@@ -57,7 +65,9 @@ allowing the configured failure window to be masked.
    receives. The timeout is capped at 30 seconds.
 2. **Valid report:** decode the datagram, refresh the receiver's last-seen timestamp, then inspect
    each service status. The monitor logs and saves a service's first state or a changed state, and
-   leaves unchanged states quiet. It then reevaluates receiver liveness.
+   leaves unchanged states quiet. A `FAILED -> HEALTHY` transition also logs
+   `FAILED -> PROMOTE (inferred) -> HEALTHY`; no promotion datagram is visible to the monitor. It then
+   reevaluates receiver liveness.
 3. **Silence:** a receive timeout reevaluates the receiver's state. Once silence reaches the derived
    expiry, the monitor logs `RECEIVER <id> FAILED` at ERROR; SUSPECT/HEALTHY transitions are logged
    at INFO. Reports that resume can move the receiver back to HEALTHY.
@@ -69,5 +79,6 @@ allowing the configured failure window to be masked.
 
 [`MainTest.java`](../../monitor/src/test/java/edu/rit/swen755/heartbeat/monitor/MainTest.java)
 covers the receiver's unseen, fresh, jitter-grace, SUSPECT, and expiry cases, including the edge
-case where the configured expiry is reached inside the jitter grace. It also checks that a
-non-positive monitor check interval is rejected at startup.
+case where the configured expiry is reached inside the jitter grace. It also checks recovery-cycle
+message formatting and that cycles are emitted only for `FAILED -> HEALTHY`, plus rejection of a
+non-positive monitor check interval at startup.

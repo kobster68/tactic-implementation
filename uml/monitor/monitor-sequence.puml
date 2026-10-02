@@ -42,6 +42,14 @@ loop while running
         MON -> MON : compare with lastServiceState[serviceId]
         alt first state or changed state
           MON -> LOG : INFO initial state or transition
+          opt previous FAILED and current HEALTHY
+            MON -> LOG : INFO SERVICE id RECOVERY\nFAILED -> PROMOTE (inferred) -> HEALTHY
+            note right of LOG
+              Promote is sent directly to the backup;
+              the monitor infers this step from the
+              observed service recovery.
+            end note
+          end
           MON -> MON : save new service state
         else state unchanged
           MON -> MON : leave state unchanged

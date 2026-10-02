@@ -15,6 +15,7 @@ package "monitor" {
     - {static} running : boolean
     --
     + {static} main(args : String[]) : void
+    ~ {static} recoveryCycleMessage(serviceId : String, previous : ServiceState, current : ServiceState) : String
     ~ {static} evaluateReceiverState(cfg : NetConfig, receiverId : String, lastReceiverSeenMs : long, currentReceiverState : ServiceState) : ServiceState
   }
 }
@@ -27,6 +28,10 @@ note right of Main
   Tracks the most recent state per service,
   plus the last report time and state for
   the receiver (all local to main()).
+  recoveryCycleMessage() identifies a
+  FAILED -> HEALTHY service transition and
+  formats PROMOTE as inferred because that
+  message is sent directly to the backup.
   evaluateReceiverState() handles receiver
   silence on both report arrival and timeout.
 end note

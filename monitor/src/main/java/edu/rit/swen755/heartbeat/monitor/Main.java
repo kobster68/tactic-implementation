@@ -91,6 +91,11 @@ public final class Main {
                                 LOG.log(Level.INFO, "SERVICE {0} {1} -> {2}",
                                         new Object[] {status.serviceId(), previous, status.state()});
                             }
+                            String recoveryMessage =
+                                    recoveryCycleMessage(status.serviceId(), previous, status.state());
+                            if (recoveryMessage != null) {
+                                LOG.log(Level.INFO, recoveryMessage);
+                            }
                             lastServiceState.put(status.serviceId(), status.state());
                         }
                     }
@@ -118,6 +123,14 @@ public final class Main {
                 }
             }
         }
+    }
+
+    static String recoveryCycleMessage(
+            String serviceId, ServiceState previous, ServiceState current) {
+        if (previous != ServiceState.FAILED || current != ServiceState.HEALTHY) {
+            return null;
+        }
+        return "SERVICE " + serviceId + " RECOVERY FAILED -> PROMOTE (inferred) -> HEALTHY";
     }
 
     static ServiceState evaluateReceiverState(
