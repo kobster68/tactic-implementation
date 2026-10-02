@@ -1,14 +1,16 @@
 # tactic-implementation
 
-SWEN-755 Tactic Implementation, Group 1: fault detection with the **heartbeat availability
-tactic**, implemented as four Java processes communicating over UDP.
+SWEN-755 Tactic Implementation, Group 1: fault **detection** with the heartbeat availability tactic
+and fault **recovery** with a redundant spare, implemented as Java processes communicating over UDP.
 
 **Repository:** https://github.com/kobster68/tactic-implementation
 
-This repository implements a **minimum heartbeat fault-detection prototype**: the shared message
-contract, JSON codec, configuration loader, Maven build, and all four process slices are implemented.
-A bounded **tracer** runs the processes on one machine and checks that the receiver detects service
-silence. The design choices below are the binding contract for every slice.
+This repository implements a **heartbeat fault-detection prototype** — the shared message contract,
+JSON codec, configuration loader, Maven build, and all process slices — and extends it with **fault
+recovery through redundancy**: a warm-spare backup critical-service that the receiver promotes when
+the primary fails. A bounded **tracer** checks detection on one machine; a **recovery demo** script
+drives a full failover. The design choices below are the binding contract for every slice. The
+recovery design, its diagrams, and the trade-off narrative live in [`uml/recovery`](uml/recovery).
 
 ## Purpose
 
@@ -28,7 +30,9 @@ malformed camera reading causes the lane-assessment process to crash. The receiv
 machine observes missing heartbeats and reports `FAILED`; the monitor logs the transition.
 With the default settings, the receiver's detection target is approximately 3-3.5 seconds after
 the last observed heartbeat (three periods plus up to one check interval), with additional network
-and scheduling delay before the monitor logs it. Recovery is reported when heartbeats resume after a manual service restart.
+and scheduling delay before the monitor logs it. In the recovery configuration a warm-spare backup
+is promoted on failure and resumes under the same service id, so detection reports the service
+`FAILED -> HEALTHY` without a manual restart (see Fault recovery with redundancy below).
 
 The simulated defect is failure to handle corrupted sensor input: the simulator randomly selects
 a truncated JSON payload or an out-of-range value, and the service's uncaught parse/validation
@@ -77,6 +81,23 @@ also stop detection. The localhost tracer alone does not demonstrate processor-f
 > Heartbeats indicate process liveness, not sensor freshness or correctness of the lane assessment.
 > The implementation is a course prototype; see the validation limitations below.
 
+## Fault recovery with redundancy
+
+The recovery layer adds a second critical-service replica so the vehicle function survives the
+primary's crash instead of stopping at it. Full design, diagrams, and the trade-off narrative are in
+[`uml/recovery`](uml/recovery); the essentials:
+
+| Topic | Choice |
+| --- | --- |
+| Redundancy pattern | **Passive / warm spare** by default: one primary, one backup. The primary streams its lane-departure state to the backup as periodic `Checkpoint` messages, so the backup stays current but idle. |
+| Replicated state | The lane-departure counter — consecutive same-direction drifts, the drift direction, and whether a warning is active. A checkpoint round-trips exactly this. |
+| Failover trigger | The existing **receiver** is the only promoter. On the `FAILED` edge it sends the backup a `Promote`; no second detector, so no split-brain. |
+| Idempotent promotion | Each `Promote` carries a failover **epoch** (0 reserved as pre-failover). The receiver resends the same epoch while `FAILED` (UDP loss tolerance, capped); the backup promotes once per epoch and ignores repeats and stale epochs. |
+| Replica count | **One-plus-one**, no voting/TMR: the fault is a crash detected by liveness, not a wrong answer needing a quorum. |
+| Recovery visibility | The backup resumes under the **same `serviceId`**, so detection sees `FAILED -> HEALTHY` and the monitor logs the recovery (`PROMOTE` marked *inferred*, since the monitor never sees the `Promote`). |
+| Deployment | Backup and receiver run on a **different machine** from the primary, so losing the primary's processor does not also lose the detector and the spare. |
+| Active mode (follow-up) | `redundancy.mode=active` fans sensor readings to both replicas (hot-spare input replication); the backup's parallel processing is a documented follow-up. |
+
 ## Build and run
 
 Requires JDK 21 and Maven 3.9+ (tests verified with Java 21.0.12.1, Maven 3.9.16).
@@ -109,6 +130,21 @@ bounded service run. Its logs are written to `target/tracer-logs/`.
 `run-system.sh` is a continuous demonstration of the full fault path. It uses the simulator's
 normal random fault probability, exits after the monitor reports `critical-service FAILED`,
 and writes its logs to `target/system-logs/`.
+
+#### Recovery demonstration
+
+`scripts/run-recovery-demo.sh` drives a full failover on one machine: it starts the monitor, backup,
+receiver, and primary, sends K-1 drift readings, kills the primary, waits for the receiver to promote
+the backup, then sends the Kth reading and checks that the promoted backup fires the lane-departure
+warning on time. Logs land in `target/recovery-demo-logs/`.
+
+```bash
+# passive (warm spare) failover demo
+bash scripts/run-recovery-demo.sh
+
+# active-mode variant (sensor fans each reading out to both replicas)
+DEMO_MODE=active bash scripts/run-recovery-demo.sh
+```
 
 ### Manual launch
 
@@ -196,6 +232,22 @@ java -Dsensor.target.host=service-host -jar sensor-sim.jar
 Permit the corresponding UDP traffic through host/network firewalls. Keep periods and thresholds
 consistent across processes, using the same override properties file where appropriate.
 
+#### Two-machine recovery deployment
+
+For the redundancy demonstration, run the primary on one machine and the backup, receiver, and
+monitor on another, so losing the primary's processor leaves the detector and the spare running.
+Example property files are in `scripts/config/`.
+
+```bash
+# machine 1: primary replica + sensor simulator
+bash scripts/run-primary-machine.sh <backup-host> <receiver-host> passive
+
+# machine 2: backup replica + receiver + monitor
+bash scripts/run-backup-machine.sh passive
+```
+
+Pass `active` instead of `passive` to both scripts for the active-mode variant.
+
 ### Tests and validation
 
 ```bash
@@ -203,9 +255,10 @@ consistent across processes, using the same override properties file where appro
 mvn test
 ```
 
-The current suite has 52 passing tests covering protocol/configuration, lane-assessment boundaries,
-runtime arguments, simulated fault payloads, receiver state transitions and UDP handling, and
-monitor state evaluation. Maven writes results to each module's `target/surefire-reports/`.
+The current suite has 78 passing tests covering protocol/configuration, lane-assessment boundaries,
+runtime arguments, simulated fault payloads, receiver state transitions and failover signalling,
+critical-service replica roles and checkpoint/promotion handling, and monitor state and recovery
+evaluation. Maven writes results to each module's `target/surefire-reports/`.
 
 Known prototype limitations: receiver and monitor timeout calculations use wall-clock time;
 clock adjustments can affect decisions. The monitor's timeout checks can be delayed by continuous
@@ -249,6 +302,11 @@ this is read directly as a JVM property rather than from `heartbeat.properties`.
 | `sensor.periodMs` | `1000` | sensor-sim send interval |
 | `sensor.faultProbability` | `0.1` | probability a given reading is a fault |
 | `sensor.corruptShare` | `0.5` | of injected faults, the share that are truncated datagrams vs. out-of-range values |
+| `redundancy.mode` | `passive` | `passive` (warm spare: primary checkpoints to the backup) or `active` (sensor fans readings to both replicas) |
+| `replica.role` | `primary` | role of this critical-service instance: `primary` or `backup` |
+| `service.backup.host` | `localhost` | host of the backup replica (receiver `Promote` and primary `Checkpoint` target) |
+| `service.backup.port` | `5011` | port the backup binds for `Promote`/`Checkpoint`, and sensor readings after promotion |
+| `service.warning.threshold` | `3` | consecutive same-direction drift readings before a lane-departure warning |
 
 ## Module responsibilities
 
@@ -262,12 +320,14 @@ message records, JSON codec, configuration loader, and default properties used a
 | `receiver` | Maintains the last-seen table, evaluates service health through `checkAlive()` and state snapshots, and sends periodic `StatusReport` messages. |
 | `monitor` | Logs service health transitions and detects receiver silence from missing status reports. |
 
-## Deliverables (course slide s.14)
+## Deliverables
 
-- [x] **Code** -- the four processes and the shared `protocol` module (this repo).
-- [x] **ReadMe** -- this file.
-- [x] **Executable packaging** -- `mvn package` produces the four self-contained runnable jars.
-- [x] **UML class diagram + sequence diagrams, with narrative** -- UML diagrams and narrative are in respective folders under `uml/`.
+- [x] **Runnable source code** -- the process modules and the shared `protocol` module (this repo).
+- [x] **ReadMe** -- this file, with run guidance and the library list above.
+- [x] **Executable packaging** -- `mvn package` produces the self-contained runnable jars.
+- [x] **Static structure** -- class diagrams under `uml/` per slice, the integrated `uml/system`, and the recovery view in [`uml/recovery`](uml/recovery).
+- [x] **Dynamic structure** -- sequence diagrams per slice and for the system, plus the failover sequence and parallel state machines in [`uml/recovery`](uml/recovery).
+- [x] **Design trade-off narrative** -- the detection rationale per slice and the recovery trade-offs in [`uml/recovery/README.md`](uml/recovery/README.md).
 
 ## Module layout
 
@@ -280,5 +340,6 @@ tactic-implementation/
   receiver/                   Process 2 (watchdog): receives Heartbeat, sends StatusReport
   monitor/                    Process 3: receives StatusReport
   scripts/run-tracer.sh       bounded four-process tracer with receiver failure check
-  uml/                        class/sequence diagrams and rendered PNGs
+  scripts/run-recovery-demo.sh  local failover demo; run-primary/backup-machine.sh for two machines
+  uml/                        class/sequence diagrams and rendered PNGs; uml/recovery holds the recovery design
 ```

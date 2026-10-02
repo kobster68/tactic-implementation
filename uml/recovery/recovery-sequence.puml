@@ -1,0 +1,57 @@
+@startuml recovery-sequence
+title Fault recovery with redundancy — failover sequence (passive / warm spare)
+
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+hide footbox
+
+participant "sensor-sim" as SIM
+participant "critical-service\n(PRIMARY)" as P
+participant "critical-service\n(BACKUP)" as B
+participant "receiver\n(watchdog)" as RX
+participant "monitor" as MON
+
+== normal operation: the backup is a warm spare ==
+loop sensor.periodMs
+  SIM ->> P : SensorReading (UDP :5001)
+  P -> P : assess lane position,\nupdate lane-departure state
+  P ->> B : Checkpoint(seq, drift state) (UDP)
+  B -> B : accept newer seq,\nrestore lane state
+end
+loop heartbeat.periodMs
+  P ->> RX : Heartbeat
+end
+loop receiver.checkIntervalMs
+  RX ->> MON : StatusReport(critical-service HEALTHY)
+end
+note over B : Current, but passive:\nno heartbeats, no sensor processing.
+
+== primary fails (hard crash) ==
+SIM ->> P : malformed reading\n(or host lost)
+P -> P : uncaught exception
+destroy P
+note over RX : Heartbeats stop.
+
+== detection drives promotion ==
+loop receiver.checkIntervalMs (while FAILED)
+  RX -> RX : missed beats rise\nHEALTHY -> SUSPECT -> FAILED
+  RX ->> MON : StatusReport(critical-service FAILED)
+  RX ->> B : Promote(epoch = 1)
+  note right of RX : Same epoch resent while FAILED\n(UDP loss tolerance, capped).
+end
+
+== backup takes over ==
+B -> B : acceptPromotion(epoch 1)\nfirst new epoch -> role = PRIMARY
+note over B : Resumes with the last\ncheckpointed drift state.
+SIM ->> B : next SensorReading\n(routing moves to the backup)
+B -> B : assess; warning fires on\nthe Kth consecutive drift
+loop heartbeat.periodMs
+  B ->> RX : Heartbeat (same serviceId)
+end
+
+== recovery observed through detection ==
+RX -> RX : beats resume -> HEALTHY
+RX ->> MON : StatusReport(critical-service HEALTHY)
+MON -> MON : log SERVICE critical-service\nRECOVERY FAILED -> PROMOTE (inferred) -> HEALTHY
+
+@enduml

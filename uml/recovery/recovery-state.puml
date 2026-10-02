@@ -1,0 +1,36 @@
+@startuml recovery-state
+title Fault recovery — parallel state machines (receiver detection || replica role)
+
+skinparam shadowing false
+hide empty description
+
+state "Recovery runs as two concurrent state machines" as SYS {
+
+  state "Receiver: per-service failover generation" as RX {
+    [*] --> HEALTHY
+    HEALTHY --> SUSPECT : missed in [1, missedCount)
+    SUSPECT --> FAILED  : missed >= missedCount\n/ bump epoch, send Promote(epoch)
+    FAILED  --> FAILED  : still missing\n/ resend same epoch (capped)
+    SUSPECT --> HEALTHY : beat
+    FAILED  --> HEALTHY : beat (service recovered)
+  }
+
+  --
+
+  state "Replica: role (one critical-service instance)" as ROLE {
+    [*] --> BACKUP : replica.role = backup
+    BACKUP  --> PRIMARY : acceptPromotion(epoch > lastHandledEpoch)
+    PRIMARY --> PRIMARY : ignore stale / duplicate Promote
+  }
+}
+
+note bottom of SYS
+  The coupling: the receiver's SUSPECT -> FAILED edge mints the epoch
+  that the backup's BACKUP -> PRIMARY transition consumes. The backup
+  acts on each epoch once, so the receiver's loss-tolerant resends never
+  cause a second promotion. Epoch 0 is the pre-failover value; the first
+  real promotion is epoch 1. A replica configured as primary starts in
+  PRIMARY and only ever ignores Promotes.
+end note
+
+@enduml
