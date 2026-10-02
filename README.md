@@ -136,7 +136,9 @@ and writes its logs to `target/system-logs/`.
 `scripts/run-recovery-demo.sh` drives a full failover on one machine: it starts the monitor, backup,
 receiver, and primary, sends K-1 drift readings, kills the primary, waits for the receiver to promote
 the backup, then sends the Kth reading and checks that the promoted backup fires the lane-departure
-warning on time. Logs land in `target/recovery-demo-logs/`.
+warning on time. Logs land in `target/recovery-demo-logs/`; a captured run — showing the promoted
+backup fire the warning on reading 3 from the checkpointed count — is saved at
+[`uml/recovery/recovery-demo.log`](uml/recovery/recovery-demo.log).
 
 ```bash
 # passive (warm spare) failover demo

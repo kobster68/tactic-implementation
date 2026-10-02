@@ -1,0 +1,34 @@
+Recovery demonstration — captured run
+=====================================
+
+Command : bash scripts/run-recovery-demo.sh   (passive / warm-spare mode, warning threshold K=3)
+Result  : RECOVERY DEMO OK — the passive backup preserved 2 readings, was promoted, and fired the
+          lane-departure warning on reading 3.
+Logs    : target/recovery-demo-logs/ (full per-process logs); the key lines are reproduced below.
+
+What this proves: the warm spare carried the lane-departure state across the failover. The primary
+checkpointed 2 consecutive drifts to the backup before it was killed, and the promoted backup fired
+the warning on the 3rd reading (count 2 -> 3). That is only possible if the backup restored the
+checkpointed count; had the state been lost, reading 3 would have been count 1 and no warning.
+
+-- primary (critical-service, before the kill) ---------------------------------------------------
+2026-10-02 17:45:57 [INFO] critical-service: lane offset=1 m, assessment=DRIFTING_RIGHT
+2026-10-02 17:45:57 [INFO] critical-service: sent checkpoint Checkpoint[serviceId=critical-service, seq=1, sentAt=1790977557432, consecutiveDriftCount=2, driftDirection=RIGHT, warningActive=false] -> localhost/127.0.0.1:5011
+2026-10-02 17:45:58 [INFO] critical-service: sent Heartbeat[serviceId=critical-service, seq=2, sentAt=1790977558025] -> localhost/127.0.0.1:5002
+(primary process killed here)
+
+-- receiver (watchdog: detect then promote) ------------------------------------------------------
+2026-10-02 17:45:55 [INFO] receiver: receiver-1 watching udp/5002; promoting backup at localhost/127.0.0.1:5011 on failover
+2026-10-02 17:46:01 [WARNING] receiver: critical-service FAILED (missed 3)
+2026-10-02 17:46:01 [INFO] receiver: critical-service FAILED -> promoting backup (failover epoch 1)
+
+-- backup (critical-service: promote, then resume with the restored state) -----------------------
+2026-10-02 17:46:01 [INFO] critical-service: promoted to PRIMARY at epoch 1
+2026-10-02 17:46:02 [INFO] critical-service: lane offset=1 m, assessment=DRIFTING_RIGHT
+2026-10-02 17:46:02 [WARNING] critical-service: lane-departure warning active after 3 consecutive drifts
+2026-10-02 17:46:02 [INFO] critical-service: sent checkpoint Checkpoint[serviceId=critical-service, seq=0, sentAt=1790977562268, consecutiveDriftCount=3, driftDirection=RIGHT, warningActive=true] -> localhost/127.0.0.1:5011
+
+-- monitor (recovery observed through the existing detection path) --------------------------------
+2026-10-02 17:46:01 [INFO] monitor: SERVICE critical-service SUSPECT -> FAILED
+2026-10-02 17:46:02 [INFO] monitor: SERVICE critical-service FAILED -> HEALTHY
+2026-10-02 17:46:02 [INFO] monitor: SERVICE critical-service RECOVERY FAILED -> PROMOTE (inferred) -> HEALTHY
