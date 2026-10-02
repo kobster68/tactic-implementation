@@ -1,6 +1,8 @@
 target/
 *.class
 *.log
+# keep the captured recovery-demo run as a tracked submission artifact
+!uml/recovery/recovery-demo.log
 .idea/
 *.iml
 .vscode/

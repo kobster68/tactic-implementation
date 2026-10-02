@@ -15,6 +15,9 @@ The three diagrams here are the recovery deliverables:
   backup resuming service.
 - [`recovery-state.puml`](recovery-state.puml) — the two state machines that run in parallel: a
   replica's role and the receiver's per-service failover generation.
+- [`recovery-demo.log`](recovery-demo.log) — a captured run of `scripts/run-recovery-demo.sh`:
+  detection, promotion, and the warning firing on reading 3 from the restored checkpoint, which is
+  the proof that the warm spare carried state across the failover.
 
 The detection slices (`uml/receiver`, `uml/critical-service`, `uml/monitor`, `uml/system`) still
 describe the baseline; this folder is the recovery layer on top of them.
