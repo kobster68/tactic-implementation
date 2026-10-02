@@ -250,7 +250,11 @@ public final class NetConfig {
      */
     public String describe(String processName) {
         return switch (processName) {
-            case "sensor-sim" -> "sensor-sim | target->" + sensorTargetHost() + ":" + sensorTargetPort()
+            case "sensor-sim" -> "sensor-sim | primary->" + sensorTargetHost() + ":" + sensorTargetPort()
+                    + ("active".equalsIgnoreCase(redundancyMode())
+                            ? " backup->" + serviceBackupHost() + ":" + serviceBackupPort()
+                            : "")
+                    + " | redundancy.mode=" + redundancyMode()
                     + " | sensor.periodMs=" + sensorPeriodMs()
                     + " faultProbability=" + sensorFaultProbability()
                     + " corruptShare=" + sensorCorruptShare();
