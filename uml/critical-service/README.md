@@ -6,6 +6,10 @@ Design deliverables for the **critical-service** process of the heartbeat fault-
 - [`critical-service-class.puml`](critical-service-class.puml) — class diagram
 - [`critical-service-sequence.puml`](critical-service-sequence.puml) — sequence diagram
 
+> These diagrams cover the detection role. The replica role, the checkpointable lane-departure state,
+> and the promotion handling that make this service a warm spare are documented with the recovery
+> design in [`../recovery`](../recovery).
+
 Rendered PNG versions are also included. Render either source with PlantUML, for example:
 
 ```text

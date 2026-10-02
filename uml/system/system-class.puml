@@ -19,6 +19,15 @@ package "critical-service\nprocess" {
   class CriticalService <<entry point>> {
     + main(args : String[])
   }
+  class ReplicaController {
+    + applyCheckpoint(cp : Checkpoint) : boolean
+    + acceptPromotion(p : Promote) : boolean
+    + role() : ReplicaRole
+  }
+  enum ReplicaRole {
+    PRIMARY
+    BACKUP
+  }
   class LaneDetector {
     + assess(reading : SensorReading) : LaneAssessment
   }
@@ -69,6 +78,15 @@ package "shared protocol" {
     SUSPECT
     FAILED
   }
+  class Checkpoint <<record>> {
+    serviceId : String
+    seq : long
+    consecutiveDriftCount : int
+  }
+  class Promote <<record>> {
+    serviceId : String
+    epoch : long
+  }
 }
 
 CriticalService --> LaneDetector : uses
@@ -76,6 +94,10 @@ LaneDetector --> LaneAssessment
 
 SensorSimulator ..> CriticalService : SensorReading\nUDP :5001
 CriticalService ..> ReceiverNode : Heartbeat\nUDP :5002
+CriticalService o--> ReplicaController
+ReplicaController --> ReplicaRole
+CriticalService ..> Checkpoint : PRIMARY -> BACKUP
+ReceiverNode ..> Promote : receiver -> BACKUP\non failover
 ReceiverNode o--> HeartbeatReceiver
 ReceiverNode ..> Monitor : StatusReport\nUDP :5003
 StatusReport *--> "*" ServiceStatus
@@ -87,6 +109,8 @@ end note
 
 note top of CriticalService
   A malformed reading terminates the service and heartbeats.
+  Runs as PRIMARY or BACKUP; the warm-spare BACKUP applies
+  Checkpoints and is promoted by a receiver Promote on failover.
 end note
 
 note top of HeartbeatReceiver

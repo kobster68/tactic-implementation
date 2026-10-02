@@ -8,6 +8,9 @@ Design deliverables for the **receiver** process of the heartbeat fault-detectio
 
 Render either with PlantUML, e.g. `plantuml receiver-class.puml` (produces a PNG/SVG next to it).
 
+> These diagrams cover the detection role. The receiver's failover trigger — it sends the backup a
+> `Promote` on the `FAILED` edge — is documented with the recovery design in [`../recovery`](../recovery).
+
 ## What the receiver is
 
 The receiver is the **watchdog**. The critical service emits a periodic `Heartbeat`; the receiver

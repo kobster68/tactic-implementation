@@ -1,0 +1,131 @@
+@startuml recovery-class
+title Fault recovery with redundancy — class diagram (SWEN-755, Group 1)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype polyline
+skinparam nodesep 35
+skinparam ranksep 45
+hide empty members
+
+' ============ critical-service: role + recoverable state ============
+package "critical-service" {
+
+  class Main <<entry point>> {
+    + {static} main(args : String[])
+    ~ {static} parseRole(value : String) : ReplicaRole
+  }
+
+  class ReplicaController {
+    - serviceId : String
+    - role : ReplicaRole
+    - lastCheckpointSeq : long = -1
+    - lastHandledEpoch : long = 0
+    --
+    + role() : ReplicaRole
+    + laneState() : LaneDepartureState
+    + applyCheckpoint(cp : Checkpoint) : boolean
+    + acceptPromotion(p : Promote) : boolean
+    + shouldProcessSensor() : boolean
+    + shouldSendHeartbeat() : boolean
+  }
+
+  class LaneDepartureState {
+    - warningThreshold : int
+    - consecutiveDriftCount : int
+    - driftDirection : DriftDirection
+    - warningActive : boolean
+    --
+    + apply(a : LaneAssessment) : boolean
+    + apply(cp : Checkpoint) : void
+    + checkpoint(serviceId, seq, sentAt) : Checkpoint
+  }
+
+  enum ReplicaRole {
+    PRIMARY
+    BACKUP
+  }
+
+  enum LaneAssessment {
+    CENTERED
+    DRIFTING_LEFT
+    DRIFTING_RIGHT
+  }
+}
+
+' ============ receiver: the single failover trigger ============
+package "receiver" {
+  class HeartbeatReceiver <<watchdog>> {
+    + check() : List<ServiceStatus>
+    + failoverSignals(statuses) : List<FailoverSignal>
+  }
+  class FailoverSignal <<record>> {
+    promote : Promote
+    firstAtEpoch : boolean
+  }
+  class ReceiverNode <<runtime>> {
+    - sends Promote to backupTarget
+  }
+}
+
+' ============ shared protocol: the recovery messages ============
+package "protocol (shared)" <<Frame>> {
+  interface Message <<sealed>>
+  class Checkpoint <<record>> {
+    serviceId : String
+    seq : long
+    sentAt : long
+    consecutiveDriftCount : int
+    driftDirection : DriftDirection
+    warningActive : boolean
+  }
+  class Promote <<record>> {
+    serviceId : String
+    sentAt : long
+    epoch : long
+  }
+  enum DriftDirection {
+    NONE
+    LEFT
+    RIGHT
+  }
+}
+
+Checkpoint ..|> Message
+Promote ..|> Message
+
+Main --> ReplicaController : creates
+ReplicaController *--> LaneDepartureState
+ReplicaController --> ReplicaRole : role
+ReplicaController ..> Checkpoint : applyCheckpoint (seq filter)
+ReplicaController ..> Promote : acceptPromotion (epoch filter)
+LaneDepartureState --> DriftDirection
+LaneDepartureState ..> LaneAssessment : apply
+LaneDepartureState ..> Checkpoint : create / restore
+Checkpoint --> DriftDirection
+
+HeartbeatReceiver ..> FailoverSignal : produces on FAILED edge
+FailoverSignal *--> Promote
+ReceiverNode ..> Promote : encode + send (UDP)
+
+note bottom of ReplicaController
+  Backup -> primary on the first new epoch only.
+  applyCheckpoint: accept newer seq for this serviceId.
+  acceptPromotion: accept epoch > lastHandledEpoch
+  (epoch 0 = pre-failover; first real promotion = 1).
+end note
+
+note bottom of LaneDepartureState
+  The state that makes the spare "warm":
+  consecutive same-direction drifts; a direction
+  change resets the count to 1; warning at threshold.
+  checkpoint()/apply(Checkpoint) round-trip it.
+end note
+
+note right of HeartbeatReceiver
+  The only promoter. On the FAILED edge it bumps a
+  per-service epoch and emits a Promote; it resends
+  the same epoch while FAILED (loss tolerance, capped).
+end note
+
+@enduml
